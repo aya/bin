@@ -1,0 +1,296 @@
+#!/usr/bin/env python
+#  See the pymilter project at http://bmsi.com/python/milter.html
+#  based on Sendmail's milter API http://www.milter.org/milter_api/api.html
+#  This code is open-source on the same terms as Python.
+
+# # Olympe Network postfix sendquota milter
+ # aya <yann.autissier@anotherservice.com>
+# from http://pythonhosted.org/pymilter/milter-template_8py-example.html
+
+import Milter
+import StringIO
+import time
+import email
+import sys
+from socket import AF_INET, AF_INET6
+from Milter.utils import parse_addr
+if True:
+  from multiprocessing import Process as Thread, Queue
+else:
+  from threading import Thread
+  from Queue import Queue
+
+# implement quota
+import ldap
+import MySQLdb
+import ConfigParser
+
+logq = Queue(maxsize=4)
+
+class myLdap():
+
+    def __init__(self,config):
+        self.ldaphost = config.get('ldap', 'host')
+        self.ldapbase = config.get('ldap', 'base')
+        self.ldapfilter = '(objectclass=posixAccount)(objectclass=mailRecipient)(objectclass=inetSubscriber)(|(inetAuthorizedServices=smtp)(inetAuthorizedServices=*))'
+        self.attributes = ['owner','uid']
+        try:
+            self.l = ldap.initialize('ldap://' + self.ldaphost)
+            self.l.protocol_version = ldap.VERSION3
+        except ldap.LDAPError, error:
+            print error
+
+    def getUser(self, mail):
+        baseDN = self.ldapbase
+        searchScope = ldap.SCOPE_SUBTREE
+        retrieveAttributes = self.attributes
+        searchFilter = '(&' + self.ldapfilter + '(mail=' + mail + '))'
+
+        try:
+            ldap_result_id = self.l.search(baseDN, searchScope, searchFilter, retrieveAttributes)
+            result_set = []
+            while 1:
+                result_type, result_data = self.l.result(ldap_result_id, 0)
+                if (result_data == []):
+                    break
+                else:
+                    if result_type == ldap.RES_SEARCH_ENTRY:
+                        result_set.append(result_data)
+            for entries in result_set:
+                for entry in entries:
+                    dn,attributes = entry
+                    try:
+                        for owner in attributes['owner']:
+                            if owner == 'uid=admin,ou=Users,dc=olympe,dc=in,dc=dns':
+                                for uid in attributes['uid']:
+                                    return uid
+                            else:
+                                return owner.split(",")[0].lstrip('uid=')
+                    except:
+                        account = dn.split(",")
+                        if len(account) == 5 and account[2] == 'dc=olympe':
+                            try:
+                                for uid in attributes['uid']:
+                                    return uid
+                            except:
+                                print 'ERROR: ldap uid not found for dn: ' + dn + ' (' + mail + ')'
+                        else:
+                            print 'ERROR: ldap owner not found for dn: ' + dn + ' (' + mail + ')'
+        except ldap.LDAPError, error:
+            print error
+        return False
+
+class mySql():
+
+    def __init__(self,config):
+        self.hostname = config.get('mysql', 'hostname')
+        self.database = config.get('mysql', 'database')
+        self.username = config.get('mysql', 'username')
+        self.password = config.get('mysql', 'password')
+        try:
+            self.m = MySQLdb.connect(host=self.hostname,user=self.username,passwd=self.password,db=self.database)
+        except MySQLdb.MySQLError, error:
+            print error
+
+    def getUid(self, user):
+        try:
+            cur = self.m.cursor()
+            cur.execute("SELECT user_id FROM users WHERE user_name = '" + user + "';")
+            try: 
+                return str(cur.fetchone()[0])
+            except:
+                print 'ERROR: mysql uid not found for user: ' + user
+        except MySQLdb.MySQLError, error:
+            print error
+        return False
+
+    def getQuota(self, uid):
+        try:
+            cur = self.m.cursor()
+            cur.execute("SELECT quota_used, quota_max FROM user_quota WHERE user_id = '" + uid + "' and quota_id = 15;")
+            try: 
+                quota = cur.fetchone()
+                return {'used': int(quota[0]), 'max': int(quota[1])}
+            except:
+                print 'ERROR: mysql quota not found for uid: ' + uid
+        except MySQLdb.MySQLError, error:
+            print error
+        return False
+
+    def updateQuota(self, uid, quota):
+        if not quota or not uid:
+            return False
+        try:
+            cur = self.m.cursor()
+            cur.execute("UPDATE user_quota SET quota_used = '" + str(quota) + "' WHERE user_id = '" + uid + "' and quota_id = 15;")
+            self.m.commit()
+            return True
+        except MySQLdb.MySQLError, error:
+            print error
+        return False
+
+class myMilter(Milter.Base):
+
+    def __init__(self):  # A new instance with each new connection.
+        self.id = Milter.uniqueID()  # Integer incremented with each call.
+        self.ldap = myLdap(self.config)
+        self.mysql = mySql(self.config)
+
+    # each connection runs in its own thread and has its own myMilter
+    # instance.  Python code must be thread safe.  This is trivial if only stuff
+    # in myMilter instances is referenced.
+    @Milter.noreply
+    def connect(self, IPname, family, hostaddr):
+        try:
+            self.IP = hostaddr[0]
+            self.port = hostaddr[1]
+            if family == AF_INET6:
+                self.flow = hostaddr[2]
+                self.scope = hostaddr[3]
+            else:
+                self.flow = None
+                self.scope = None
+        except:
+            self.log("ERROR: Unable to get hostaddr from %s" % IPname)
+            # self.setreply('550','5.7.1','ERROR: Unable to get hostaddr')
+            # return Milter.REJECT
+        self.IPname = IPname  # Name from a reverse IP lookup
+        self.H = None
+        self.fp = None
+        self.receiver = self.getsymval('j')
+        # self.log("connect from %s at %s" % (IPname, hostadsdr) )
+
+        return Milter.CONTINUE
+
+    ##  def hello(self,hostname):
+    def hello(self, heloname):
+        self.H = heloname
+#        self.log("HELO %s" % heloname)
+#        if heloname.find('.') < 0:  # illegal helo name
+#            # NOTE: example only - too many real braindead clients to reject on this
+#            self.setreply('550','5.7.1','Sheesh people!  Use a proper helo name!')
+#            return Milter.REJECT
+        return Milter.CONTINUE
+
+    ##  def envfrom(self,f,*str):
+    def envfrom(self, mailfrom, *str):
+        self.F = mailfrom
+        self.R = []  # list of recipients
+        self.fromparms = Milter.dictfromlist(str)   # ESMTP parms
+        self.user = self.getsymval('{auth_authen}') # authenticated user
+        # implement quota
+        if self.user:
+            # self.log("mail:", self.user, *str)
+            self.ldapUser = self.ldap.getUser(self.user)
+            if not self.ldapUser:
+                self.setreply('554','5.7.1','This user doesn\'t have a valid ldap account (' + self.user + ')')
+                self.log('Unable to find user ' + self.user + ' ' + mailfrom + ' from ' + self.IPname )
+                return Milter.REJECT
+            self.mysqlUid = self.mysql.getUid(self.ldapUser)
+            if not self.mysqlUid:
+                self.setreply('554','5.7.1','This user doesn\'t have a valid mysql account (' + self.user + ')')
+                self.log('Unable to find uid ' + self.user + ' ' + mailfrom + ' from ' + self.IPname + ')')
+                return Milter.REJECT
+            self.quota = self.mysql.getQuota(self.mysqlUid)
+            if not self.quota:
+                self.setreply('554','5.7.1','This user doesn\'t have a valid quota (' + self.user + ')')
+                self.log('Unable to find uid ' + self.user + ' ' + mailfrom + ' from ' + self.IPname + ')')
+                return Milter.REJECT
+        self.fp = StringIO.StringIO()
+        return Milter.CONTINUE
+
+    ##  def envrcpt(self, to, *str):
+    @Milter.noreply
+    def envrcpt(self, to, *str):
+        rcptinfo = to,Milter.dictfromlist(str)
+        self.R.append(rcptinfo)
+        return Milter.CONTINUE
+
+    @Milter.noreply
+    def header(self, name, hval):
+        self.fp.write("%s: %s\n" % (name,hval))     # add header to buffer
+        return Milter.CONTINUE
+
+    # @Milter.noreply
+    def eoh(self):
+        self.fp.write("\n")                         # terminate headers
+        # implement quota
+        try:
+            self.quota
+        except:
+            mailto,info = self.R[0]
+            self.log('Delivering mail for ' + mailto + ' from ' + self.IPname)
+            return Milter.CONTINUE
+        if self.quota['used'] + len(self.R) > self.quota['max']:
+            self.setreply('554','5.7.1','User quota exceeded ('+str(self.quota['max'])+') ! Please try again later')
+            self.log('Quota exceeded for user ' + self.ldapUser + ' <' + self.user + '> (' + str(self.quota['used']) + ' + ' + str(len(self.R)) + ' > ' + str(self.quota['max']) + ') from ' + self.IPname)
+            return Milter.REJECT
+        else:
+            if self.mysql.updateQuota(self.mysqlUid, self.quota['used'] + len(self.R)):
+                self.log('Quota updated for user ' + self.ldapUser + ' <' + self.user + '> (' + str(self.quota['used'] + len(self.R)) + '/' + str(self.quota['max']) + ') from ' + self.IPname)
+                return Milter.CONTINUE
+            else:
+                self.setreply('550','5.7.1','Internal error while updating your quota ! Please try again later')
+                self.log('Unable to update quota for user ' + self.ldapUser + ' <' + self.user + '> (used: ' + str(self.quota['used']) + ', count: ' + str(len(self.R)) + ') from ' + self.IPname)
+                return Milter.REJECT
+
+    @Milter.noreply
+    def body(self, chunk):
+        self.fp.write(chunk)
+        return Milter.CONTINUE
+
+    def eom(self):
+        self.fp.seek(0)
+        # many milter functions can only be called from eom()
+        # example of adding a Bcc:
+        # self.addrcpt('<%s>' % 'spy@example.com')
+        msg = email.message_from_file(self.fp)
+        return Milter.ACCEPT
+
+    def close(self):
+        # always called, even when abort is called.  Clean up
+        # any external resources here.
+        return Milter.CONTINUE
+
+    def abort(self):
+        # client disconnected prematurely
+        return Milter.CONTINUE
+
+    ## === Support Functions ===
+
+    def log(self,*msg):
+        logq.put((msg,self.id,time.time()))
+
+def background():
+    while True:
+        t = logq.get()
+        if not t: break
+        msg,id,ts = t
+        print "%s [%d]" % (time.strftime('%Y/%b/%d %H:%M:%S',time.localtime(ts)),id),
+        for i in msg: print i,
+        print
+
+## ===
+
+def main():
+    bt = Thread(target=background)
+    bt.start()
+    socketname = "inet:10123@127.0.0.1"
+    timeout = 600
+    # Register to have the Milter factory create instances of your class:
+    Milter.factory = myMilter
+    myMilter.config = ConfigParser.RawConfigParser()
+    myMilter.config.read( ['/usr/local/etc/hosting.ini', '/dns/in/olympe/etc/settings/hosting.ini'] )
+    flags = Milter.CHGBODY + Milter.CHGHDRS + Milter.ADDHDRS
+    flags += Milter.ADDRCPT
+    flags += Milter.DELRCPT
+    Milter.set_flags(flags)
+    print "%s milter startup" % time.strftime('%Y/%b/%d %H:%M:%S')
+    sys.stdout.flush()
+    Milter.runmilter("pythonfilter",socketname,timeout)
+    logq.put(None)
+    bt.join()
+    print "%s milter shutdown" % time.strftime('%Y/%b/%d %H:%M:%S')
+
+if __name__ == "__main__":
+    main()
