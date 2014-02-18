@@ -5,6 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20130826 AYA : wget profiles and functions from remote files
 # 20130824 AYA : pass arguments to tests, call restart on failed tests, factorize functions
 # 20130823 AYA : get profile from hostname, summary output for supervision, debian support
 # 20130821 AYA : user account list
@@ -13,7 +14,7 @@
 # 20130814 AYA : check open files for DB2, numeric output for supervision
 # 20130731 AYA : first version for redhat, check few services
 #
-RELEASE="0.6.1"
+RELEASE="0.6.2"
 
 # #
  #
@@ -21,54 +22,48 @@ RELEASE="0.6.1"
 exit=0
 ERR_BINNOTFOUND=1
 ERR_TESTNOTFOUND=2
-ERR_SERVICENOTRUNNING=4
+ERR_PROCESSNOTFOUND=4
 ERR_PACKAGENOTFOUND=8
-ERR_UNDEFINED=16
+ERR_SERVICENOTFOUND=16
+ERR_UPGRADEFAILED=32
+ERR_UNDEFINED=64
 ERR_LOCKED=128
 
-# we need error code when using pipes
+# error code goes through pipes
 set -o pipefail
 
 # #
  #
 # binaries
-AWK=$(which awk)
-CAT=$(which cat)
-CUT=$(which cut)
-DPKG=$(which dpkg)
-HOSTNAME=$(which hostname)
-GREP=$(which grep)
-LAST=$(which last)
-LASTLOG=$(which lastlog)
-LSOF=$(which lsof)
-PIDOF=$(which pidof)
-PS=$(which ps)
-RPM=$(which rpm)
-
-# check binaries
-[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LAST}" ] ||[ -z "${LASTLOG}" ] ||  [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERR_BINNOTFOUND}
-[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
+AWK=$(which awk 2>/dev/null)
+CAT=$(which cat 2>/dev/null)
+CUT=$(which cut 2>/dev/null)
+DPKG=$(which dpkg 2>/dev/null)
+HOSTNAME=$(which hostname 2>/dev/null)
+GREP=$(which grep 2>/dev/null)
+LAST=$(which last 2>/dev/null)
+LASTLOG=$(which lastlog 2>/dev/null)
+LSOF=$(which lsof 2>/dev/null)
+PIDOF=$(which pidof 2>/dev/null)
+PS=$(which ps 2>/dev/null)
+RPM=$(which rpm 2>/dev/null)
 
 # #
  #
-# define profiles that will launch a predefined set of tests
-DEFAULT="pidof_postfix pidof_rsyslogd pidof_sshd pidof_zabbix_agentd"
-PROFILE_AS="pidof_munin_node pidof_openvpn"
-PROFILE_AS001="pidof_apache2 pidof_lightbot pidof_nscd pidof_mysqld"
-PROFILE_AS002="pidof_apache2 pidof_nscd"
-PROFILE_ORB="pidof_postgres"
-PROFILE_ORB001="pidof_munin_node pidof_java:6:OpenbravoERP pidof_apache2"
-PROFILE_ORB002="pidof_munin_node"
-PROFILE_ORB003="pidof_munin"
-PROFILE_ORB004="pidof_munin"
-PROFILE_ORB005="pidof_munin"
-PROFILE_PROXY="pidof_dovecot pidof_haproxy pidof_lighttpd pidof_munin pidof_nscd pidof_openvpn pidof_pdns_server pidof_postfix pidof_postgrey pidof_proftpd pidof_runsvdir pidof_sshd_chroot pidof_sogod"
-PROFILE_DB2="system_open_files db2_open_files"
-PROFILE_YANN="pidof_rsyslogd"
+# default profile
+DEFAULT=""
+# this script (remote upgrade)
+REMOTE_SCRIPT="http://10.100.11.80/tools/check"
+# remote profile override
+REMOTE_PROFILE="http://10.100.11.80/tools/check_profile"
+# remote function override
+REMOTE_FUNCTION="http://10.100.11.80/tools/check_function"
 
 # date format
 DATE_FORMAT="%d/%m/%Y"
 
+# #
+ #
 # help
 function usage() {
 echo "Usage: $0 [options] test [test [...]]
@@ -78,19 +73,23 @@ options:
         -a, --all               lance tous les tests
         -d, --debug             active la mode de deboggage
         -h, --help              affiche ce message
+        -i, --info              affiche des informations detaillees pour certains tests
         -l, --list              affiche les jeux de tests de tous les profils
         -la, --list --all       affiche tous les jeux de tests disponibles
         -n, --numeric           retourne uniquement des valeurs numeriques
-        -o, --operand=<operand> passe <operand> en argument aux tests
+        -o, --operand=<operand> passe un argument <operand> a tous les tests
         -p, --profile=<profil>  utilise le jeu de test pour le <profil>
         -q, --quiet             active le mode silencieux
         -r, --restart           utilise la commande restart quand un test retourne une erreur
         -s, --summary           affiche la liste des tests en erreur
+        -u, --update            force la mise a jour des fichiers de profiles et de fonctions
         -v, --version           affiche la version"
 }
 
+# #
+ #
 # check options
-while getopts "adhlno:p:qrsv-:" Option; do
+while getopts "adhilno:p:qrsuv-:" Option; do
     case "$Option" in
         -)
             case $OPTARG in
@@ -102,6 +101,9 @@ while getopts "adhlno:p:qrsv-:" Option; do
                     ;;
                 help)
                     HELP=1
+                    ;;
+                info)
+                    INFO=1
                     ;;
                 list)
                     LIST=1
@@ -130,6 +132,9 @@ while getopts "adhlno:p:qrsv-:" Option; do
                 summary)
                     SUMMARY=1
                     ;;
+                update)
+                    UPDATE=$((${UPDATE:-0} + 1))
+                    ;;
                 version)
                     VERSION=1
                     ;;
@@ -143,6 +148,9 @@ while getopts "adhlno:p:qrsv-:" Option; do
             ;;
         h)
             HELP=1
+            ;;
+        i)
+            INFO=1
             ;;
         l)
             LIST=1
@@ -165,6 +173,9 @@ while getopts "adhlno:p:qrsv-:" Option; do
         s)
             SUMMARY=1
             ;;
+        u)
+            UPDATE=$((${UPDATE:-0} + 1))
+            ;;
         v)
             VERSION=1
             ;;
@@ -176,14 +187,60 @@ while getopts "adhlno:p:qrsv-:" Option; do
 done
 shift $(($OPTIND - 1))
 
-# # options triggers specific actions
+# #
  #
+# check binaries
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LAST}" ] ||[ -z "${LASTLOG}" ] ||  [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERR_BINNOTFOUND}
+[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
+
+# #
+ #
+# process options
 # set debug
 [ ${DEBUG} ] && set -x
 # show help
 [ ${HELP} ] && usage && exit 0
 # show version
 [ ${VERSION} ] && echo "$(basename $0) v${RELEASE}" && exit 0
+
+# update profiles and functions from remote host
+[ ${UPDATE:-0} -gt 1 ] && {
+    # get profiles from remote file
+    wget --proxy=off -q "${REMOTE_PROFILE}" -O "/tmp/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_PROFILE}" >&2
+    # if file is not empty, overwrite local file
+    [ -s "/tmp/.$(basename $0)_profile.$$" ] && mv "/tmp/.$(basename $0)_profile.$$" $0_profile && chmod +r $0_profile || error=${ERR_UPGRADEFAILED}
+    # get functions from remote file
+    wget --proxy=off -q "${REMOTE_FUNCTION}" -O "/tmp/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_FUNCTION}" >&2
+    # if file is not empty, overwrite local file
+    [ -s "/tmp/.$(basename $0)_function.$$" ] && mv "/tmp/.$(basename $0)_function.$$" $0_function && chmod +r $0_function || error=${ERR_UPGRADEFAILED}
+    # exit if upgrade failed
+    [ ${error:-0} -ne 0 ] && exit ${error}
+}
+
+# Not documented : auto upgrade, overwrite this script !
+[ ${UPDATE:-0} -gt 1 ] && {
+    [ ! ${QUIET} ] && echo -n "Do you really want to upgrade this script ? [y/N] : " && read UPGRADE
+    [[ ${QUIET} || ${UPGRADE} =~ ^(Y|y) ]] && {
+        wget --proxy=off -q "${REMOTE_SCRIPT}" -O "/tmp/.$(basename $0).$$" 2>/dev/null || error=${ERR_UPGRADEFAILED}
+        [ ${error:-0} -ne 0 ] && echo "WARNING: Unable to wget ${REMOTE_SCRIPT}" >&2 && exit ${error:-0}
+        [ ! ${QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' /tmp/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${RELEASE}, continue ? [y/N] : " && read UPGRADE_OK
+        [[ ${QUIET} || ${UPGRADE_OK} =~ ^(Y|y) ]] && {
+            [ -s "/tmp/.$(basename $0).$$" ] && mv "/tmp/.$(basename $0).$$" $0 && chmod +x $0 || error=${ERR_UPGRADEFAILED}
+            [ ${error:-0} -ne 0 ] && {
+                echo "ERROR: Upgrade failed !" >&2
+            } || {
+                [ ! ${QUIET} ] && echo "INFO: Upgrade Successful"
+            }
+        }
+    }
+# exit
+exit ${error:-0}
+}
+
+# load profiles override
+[ -r "$0_profile" ] && source "$0_profile"
+# functions override is loaded after local functions definition
+
 # list profiles
 [ ${LIST} ] && [ ! ${ALL} ] && \
     echo "Listing profiles :" && \
@@ -199,11 +256,13 @@ shift $(($OPTIND - 1))
 
 # #
  #
-# get tests to launch from argv
+# get list of tests from argv
 TESTS="$@"
 # if no input, check hostname to define current profile
 hostname="$(hostname -s)"
-HOSTNAME=${hostname^^}
+# ^^ need bash v4
+# HOSTNAME=${hostname^^}
+HOSTNAME=$(hostname -s |tr '[a-z]' '[A-Z]')
 [ -z "${TESTS}" ] && for profile in $(compgen -v PROFILE_); do
     [[ ${HOSTNAME} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
     [[ ${HOSTNAME/-/} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
@@ -322,8 +381,19 @@ function check_account_with_crontab() {
     [ ${NUMERIC} ] && account_with_crontab="$(ls -ln /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')" || account_with_crontab="$(ls -l /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${account_with_crontab}
-    [ ${NUMERIC} ] || [ ${QUIET} ] || for account_with_crontab_user in ${account_with_crontab}; do 
+    [ ${INFO} ] && for account_with_crontab_user in ${account_with_crontab}; do 
         cat /var/spool/cron/${account_with_crontab_user} /var/spool/cron/*/${account_with_crontab_user} 2>/dev/null |awk '$0 !~ /^(#|$)/ {print "'${account_with_crontab_user}': "$0}'
+    done
+    return ${error:-0}
+}
+
+# account with privileges
+function check_account_with_privilege() {
+    account_with_privilege="$(echo $(cat /etc/passwd 2>/dev/null |awk 'BEGIN {FS=":"} $3 == "0" {print $1}') $(check_account_with_sudo) |xargs -n1 |awk '!t[$0]++' |xargs)"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    echo ${account_with_privilege}
+    [ ${INFO} ] && for account_with_privilege_user in ${account_with_privilege}; do 
+        echo ${account_with_privilege_user}
     done
     return ${error:-0}
 }
@@ -336,59 +406,25 @@ function check_account_with_process() {
     return ${error:-0}
 }
 
+# account with sudo privileges
+function check_account_with_sudo() {
+    # user or group with sudo (root    ALL=(ALL)       ALL)
+    account_or_group_with_sudo="$(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null |awk '$0 !~ /^(#|$)/ && $2 ~ /=/ && $3 ~ /ALL/ {print $1}')"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    for account_or_group in ${account_or_group_with_sudo}; do 
+        # group begins with %
+        [[ ${account_or_group} =~ ^% ]] && account_with_sudo="${account_with_sudo} $(getent group ${account_or_group/\%/} |awk 'BEGIN {FS=":"} {print $4}' |sed 's/,/ /')" || account_with_sudo="${account_with_sudo} ${account_or_group}"
+    done
+    echo ${account_with_sudo} |xargs -n1 |awk '!t[$0]++' |xargs
+    return ${error:-0}
+}
+
 # active accounts
 function check_account_without_password() {
-    account_without_password="$(cat /etc/passwd /etc/shadow 2>/dev/null | grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $2 == "" {print $1}' |sort -u)"
+    account_without_password="$(cat /etc/passwd /etc/shadow 2>/dev/null |grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $2 == "" {print $1}' |sort -u)"
     [ ${NUMERIC} ] && account_without_password="$(for account_without_password_user in ${account_without_password}; do id -u ${account_without_password_user}; done)"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${account_without_password}
-    return ${error:-0}
-}
-
-# db2 auth plugin
-function check_db2_auth_plugin() {
-    [ ${QUIET} ] || echo
-    for db2_instance in $(check_db2_instances); do
-        db2_auth_plugin="$(su ${db2_instance} -c 'DB2INSTANCE='${db2_instance}' ~/sqllib/adm/db2set |grep "DB2AUTH" |cut -d= -f2')"
-        echo "${db2_instance}: ${db2_auth_plugin:-DB2}"
-    done
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error:-0}
-}
-
-# db2 home directory
-function check_db2_homedir() {
-    [ ${QUIET} ] || echo
-    for db2_instance in $(check_db2_instances); do
-        db2_homedir=$(egrep "^${db2_instance}:" /etc/passwd | cut -d: -f 6);
-        echo "${db2_instance}: ${db2_homedir}"
-    done
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error:-0}
-}
-
-# db2 instances
-function check_db2_instances() {
-    db2_instances="$(/opt/ibm/db2/*/bin/db2ilist 2>/dev/null)" || db2_instances=""
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${db2_instances}
-    return ${error:-0}
-}
-
-# closed files by db2 on db risques
-function check_db2_risques_closed_files() {
-    db2_risques_closed_files=$(id entrepot >/dev/null 2>&1 && su entrepot -c "~/sqllib/bin/db2 get snapshot for db on risques 2>/dev/null |awk '/Database files closed/ {print \$5}'")
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${db2_risques_closed_files}
-    return ${error:-0}
-}
-
-# number of files, thread, unique files opened by db2sys
-function check_db2_open_files() {
-    for p in $(/sbin/pidof db2sysc 2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED} && return ${error:-0}
-    [ ${NUMERIC} ] || [ ${QUIET} ] || ps -eLf |awk 'BEGIN {totalfiles=0; totaltables=0; totalthreads=0; totalsockets=0} $10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(risques|papillon|entrepot)\" |sort -u |wc -l"; tables |getline opentables[pid]; sockets="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(socket)\" |sort -u |wc -l"; sockets |getline opensockets[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; totalthreads+=thread[pid]; totalsockets+=opensockets[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", fichiers: "openfiles[pid]", tables: "opentables[pid]", threads: "thread[pid]", sockets: "opensockets[pid]}; print "TOTAL fichiers: "totalfiles", tables: "totaltables", threads: "totalthreads", sockets: "totalsockets}' |sort -n -k 6
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error:-0}
 }
 
@@ -465,6 +501,22 @@ function check_last_reboot() {
     return ${error:-0}
 }
 
+# number of files, unique files, threads and sockets opened by a process
+function check_openfiles() {
+    for operand in $1 ${OPERAND}; do
+        open_files=$(for pid in $(/sbin/pidof ${operand} 2>/dev/null); do ls -l /proc/${pid}/fd 2>/dev/null |sed 1d; done |wc -l)
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        [ -n "${open_files}" ] && echo -n "${open_files} "
+    done
+    echo
+    [ ${INFO} ] && for operand in $1 ${OPERAND}; do
+        pidof ${operand} >/dev/null 2>&1 && echo && ps -eLf |awk 'BEGIN {totalfiles=0; totalufiles=0; totalthreads=0; totalsockets=0} $10 ~ /'${operand}'/ {user[$2]=$1; date[$2]=$7; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |sed 1d |wc -l"; files |getline openfiles[pid]; ufiles="ls -l /proc/"pid"/fd 2>/dev/null |sed 1d |cut -d\" \" -f 11 |grep -vE \"(socket)\" |sort -u |wc -l"; ufiles |getline uniquefiles[pid]; sockets="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(socket)\" |sort -u |wc -l"; sockets |getline opensockets[pid]; totalopenfiles+=openfiles[pid]; totaluniquefiles+=uniquefiles[pid]; totalthreads+=thread[pid]; totalopensockets+=opensockets[pid]; print "user: "user[pid]", pid: "pid", date: "date[pid]", fichiers: "openfiles[pid]", uniques: "uniquefiles[pid]", threads: "thread[pid]", sockets: "opensockets[pid]}; print "TOTAL '${operand}' ... fichiers: "totalopenfiles", uniques: "totaluniquefiles", threads: "totalthreads", sockets: "totalopensockets}' 
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+    done
+    [ ${error:-0} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error:-0}
+}
+
 # package is installed
 function check_package() {
     for operand in $1 ${OPERAND}; do
@@ -527,7 +579,7 @@ function check_pidof() {
         # search with pidof, ps, or lsof 
         # $operand looks like : process_to_search:type_of_search:column_to_search:word_to_search
         input=($(echo $operand |awk 'BEGIN{FS=":"} {print $1" "$2" "$3" "$4}'))
-        # input is an array with process, type, column et word to search
+        # input is an array with process, type, column and word to search
         process_to_search=${input[0]}
         type_of_search=${input[1]}
         column_to_search=${input[2]}
@@ -557,77 +609,14 @@ function check_pidof() {
         echo -n " "
     done
     echo
-    [ ${error:-0} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}
+    [ ${error:-0} -ne 0 ] && error=${ERR_PROCESSNOTFOUND}
     return ${error:-0}
-}
-
-# lightbot is running
-function check_pidof_lightbot() {
-    # [ -n "$(ps ax |awk '$5 ~ /java/ && $7 == "lightbot.jar" {print $1}')" ]
-    check_pidof java:ps:7:lightbot.jar
-}
-
-# munin is running
-function check_pidof_munin() {
-    check_pidof munin-node
-}
-
-# munin_node is running
-function check_pidof_munin_node() {
-    # [ -n "$(ps ax |awk '$5 ~ /perl/ && $7 ~ /munin-node/ {print $1}')" ]
-    check_pidof perl:ps:7:munin-node
-}
-
-# pdns_server is running
-function check_pidof_pdns_server() {
-    check_pidof pdns_server
-}
-
-# postfix is running
-function check_pidof_postfix() {
-    # [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
-    # check_pidof postfix\\/master:lsof:9:var\\/spool\\/postfix\\/pid\\/master.pid
-    check_pidof master
-}
-
-# postgrey is running
-function check_pidof_postgrey() {
-    check_pidof postgrey:ps:6
-}
-
-# sshd_chroot is running
-function check_pidof_sshd_chroot() {
-    # [ -n "$(ps ax |awk '$5 ~ /sshd/ && $9 == "/etc/ssh-chroot/sshd_config" {print $1}')" ]
-    check_pidof sshd:ps:9:ssh-chroot
-}
-
-# zabbix_agentd is running
-function check_pidof_zabbix_agentd() {
-    check_pidof zabbix_agentd
-}
-
-# zabbix_server is running
-function check_pidof_zabbix_server() {
-    check_pidof zabbix_server
 }
 
 # processor type
 function check_processor_type() {
     uname -p 2>/dev/null 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error:-0}
-}
-
-# raid mdadm status
-function check_raid_mdadm_status() {
-    for dev in /dev/md*; do
-        if [ -b ${dev} ]; then
-            raid_mdadm_status=$(mdadm --detail ${dev} 2>/dev/null |awk '$1 ~ /State/ {print $3}')
-            [[ "${raid_mdadm_status}" =~ (clean|active) ]] && raid_mdadm_error=0 || raid_mdadm_error=1
-            [ ${raid_mdadm_error:-0} -gt ${error:-0} ] && error=${raid_mdadm_error}
-        fi
-    done
-    [ ${error:-0} -ne 0 ] && error=${ERR_UNDEFINED} && echo ${ERROR} || echo ${OK}
     return ${error:-0}
 }
 
@@ -643,7 +632,7 @@ function check_system_date() {
 }
 
 # number of open files
-function check_system_open_files() {
+function check_system_openfiles() {
     cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error:-0}
@@ -657,6 +646,9 @@ function check_system_release() {
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error:-0}
 }
+
+# load functions override
+[ -r "$(dirname $0)/check_function" ] && source "$(dirname $0)/check_function"
 
 # # -a flag
  #
