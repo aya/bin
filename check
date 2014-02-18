@@ -5,14 +5,15 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
-# 20130824/AYA : pass arguments to tests, call restart on failed tests, factorize functions
-# 20130823/AYA : get profile from hostname, summary output for supervision, debian support
-# 20130821/AYA : user account list
-# 20130819/AYA : package information
-# 20130816/AYA : define group of tests in profiles
-# 20130814/AYA : check open files for DB2, numeric output for supervision
-# 20130731/AYA : first version for redhat, check few services
-RELEASE="0.6.0"
+# 20130824 AYA : pass arguments to tests, call restart on failed tests, factorize functions
+# 20130823 AYA : get profile from hostname, summary output for supervision, debian support
+# 20130821 AYA : user account list
+# 20130819 AYA : package information
+# 20130816 AYA : define group of tests in profiles
+# 20130814 AYA : check open files for DB2, numeric output for supervision
+# 20130731 AYA : first version for redhat, check few services
+#
+RELEASE="0.6.1"
 
 # #
  #
@@ -22,7 +23,8 @@ ERR_BINNOTFOUND=1
 ERR_TESTNOTFOUND=2
 ERR_SERVICENOTRUNNING=4
 ERR_PACKAGENOTFOUND=8
-ERR_UNDEFINED=128
+ERR_UNDEFINED=16
+ERR_LOCKED=128
 
 # we need error code when using pipes
 set -o pipefail
@@ -33,11 +35,10 @@ set -o pipefail
 AWK=$(which awk)
 CAT=$(which cat)
 CUT=$(which cut)
-DB2=$(which db2)
 DPKG=$(which dpkg)
-DSMC=$(which dsmc)
 HOSTNAME=$(which hostname)
 GREP=$(which grep)
+LAST=$(which last)
 LASTLOG=$(which lastlog)
 LSOF=$(which lsof)
 PIDOF=$(which pidof)
@@ -45,15 +46,23 @@ PS=$(which ps)
 RPM=$(which rpm)
 
 # check binaries
-[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERR_BINNOTFOUND}
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LAST}" ] ||[ -z "${LASTLOG}" ] ||  [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERR_BINNOTFOUND}
 [ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
 
-# # you can here define some profiles that will launch a predefined set of tests
+# #
  #
-# profiles
-DEFAULT="pidof_munin pidof_nscd pidof_postfix pidof_rsyslogd pidof_sshd pidof_zabbix_agentd"
-PROFILE_AS="pidof_apache2 pidof_lightbot pidof_mysqld pidof_openvpn"
-PROFILE_PROXY="pidof_dovecot pidof_haproxy pidof_lighttpd pidof_openvpn pidof_pdns pidof_postfix pidof_postgrey pidof_proftpd pidof_runsvdir pidof_sshd_chroot pidof_sogod"
+# define profiles that will launch a predefined set of tests
+DEFAULT="pidof_postfix pidof_rsyslogd pidof_sshd pidof_zabbix_agentd"
+PROFILE_AS="pidof_munin_node pidof_openvpn"
+PROFILE_AS001="pidof_apache2 pidof_lightbot pidof_nscd pidof_mysqld"
+PROFILE_AS002="pidof_apache2 pidof_nscd"
+PROFILE_ORB="pidof_postgres"
+PROFILE_ORB001="pidof_munin_node pidof_java:6:OpenbravoERP pidof_apache2"
+PROFILE_ORB002="pidof_munin_node"
+PROFILE_ORB003="pidof_munin"
+PROFILE_ORB004="pidof_munin"
+PROFILE_ORB005="pidof_munin"
+PROFILE_PROXY="pidof_dovecot pidof_haproxy pidof_lighttpd pidof_munin pidof_nscd pidof_openvpn pidof_pdns_server pidof_postfix pidof_postgrey pidof_proftpd pidof_runsvdir pidof_sshd_chroot pidof_sogod"
 PROFILE_DB2="system_open_files db2_open_files"
 PROFILE_YANN="pidof_rsyslogd"
 
@@ -107,10 +116,10 @@ while getopts "adhlno:p:qrsv-:" Option; do
                     OPERAND="${OPERAND} ${OPTARG#*=}"
                     ;;
                 profile)
-                    PROFILE="${PROFILE} ${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
+                    PROFILE="${PROFILE} PROFILE_${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
                     ;;
                 profile=*)
-                    PROFILE="${PROFILE} ${OPTARG#*=}"
+                    PROFILE="${PROFILE} PROFILE_${OPTARG#*=}"
                     ;;
                 quiet)
                     QUIET=1
@@ -145,7 +154,7 @@ while getopts "adhlno:p:qrsv-:" Option; do
             OPERAND="${OPERAND} ${OPTARG}"
             ;;
         p)
-            PROFILE="${PROFILE} ${OPTARG}"
+            PROFILE="${PROFILE} PROFILE_${OPTARG}"
             ;;
         q)
             QUIET=1
@@ -188,14 +197,16 @@ shift $(($OPTIND - 1))
 # -s flag display only summary
 [ ${SUMMARY} ] && exec 3>&1 >/dev/null
 
-# # determine wich tests will be launched
+# #
  #
-# set tests from argv
+# get tests to launch from argv
 TESTS="$@"
 # if no input, check hostname to define current profile
 hostname="$(hostname -s)"
+HOSTNAME=${hostname^^}
 [ -z "${TESTS}" ] && for profile in $(compgen -v PROFILE_); do
-    [[ ${hostname^^} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
+    [[ ${HOSTNAME} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
+    [[ ${HOSTNAME/-/} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
 done
 # if no input, use DEFAULT tests
 [ -n "${TESTS}" ] || TESTS="${DEFAULT}"
@@ -205,9 +216,9 @@ for profile in ${PROFILE}; do
     [ -n "${!profile}" ] && TESTS="${TESTS} ${!profile}" || [ ${QUIET} ] || echo "WARNING: ${profile} is not a valid profile" >&2
 done
 
-# # functions are defined from here
+# #
  #
-# 
+# functions are defined from here
 
 # active accounts
 function check_account_active() {
@@ -459,7 +470,7 @@ function check_package() {
     for operand in $1 ${OPERAND}; do
         rpm -q ${operand} >/dev/null 2>&1 \
         || dpkg -s ${operand} >/dev/null 2>&1
-        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package:${operand}"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         [ ${operand_error} -ne 0 ] && echo -n ${ERROR} || echo -n ${OK}
         echo -n " "
     done
@@ -473,7 +484,7 @@ function check_package_date() {
     for operand in $1 ${OPERAND}; do
         package_date="$(rpm -q ${operand} --queryformat '%{installtime}' 2>/dev/null)" \
         || package_date="$(date -r /var/lib/dpkg/info/${operand}.list +%s 2>/dev/null)"
-        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package_date:${operand}"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         [ ${NUMERIC} ] && echo -n ${package_date} || echo -n $(date -d "@${package_date}" +${DATE_FORMAT} 2>/dev/null)
         echo -n " "
     done
@@ -487,7 +498,7 @@ function check_package_release() {
     for operand in $1 ${OPERAND}; do
         package_release="$(rpm -q ${operand} --queryformat '%{release}' 2>/dev/null)" \
         || package_release="$(dpkg-query -W -f '${Revision}' ${operand} 2>/dev/null)"
-        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package_release:${operand}"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         echo -n ${package_release}
         echo -n " "
     done
@@ -501,7 +512,7 @@ function check_package_version() {
     for operand in $1 ${OPERAND}; do
         package_version="$(rpm -q ${operand} --queryformat '%{version}' 2>/dev/null)" \
         || package_version="$(dpkg-query -W -f '${Version}' ${operand} 2>/dev/null)"
-        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package_version:${operand}"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         echo -n ${package_version}
         echo -n " "
     done
@@ -513,9 +524,36 @@ function check_package_version() {
 # service is running
 function check_pidof() {
     for operand in $1 ${OPERAND}; do
-        pidof ${operand} >/dev/null 2>&1
-        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} pidof:${operand}"
-        [ ${operand_error} -ne 0 ] && echo -n ${ERROR} || echo -n ${OK}
+        # search with pidof, ps, or lsof 
+        # $operand looks like : process_to_search:type_of_search:column_to_search:word_to_search
+        input=($(echo $operand |awk 'BEGIN{FS=":"} {print $1" "$2" "$3" "$4}'))
+        # input is an array with process, type, column et word to search
+        process_to_search=${input[0]}
+        type_of_search=${input[1]}
+        column_to_search=${input[2]}
+        word_to_search=${input[3]}
+        # search_pid_command depends on type_of_search
+        # default : $(pidof $process_to_search)
+        # ps : $(ps ax |awk '$5 ~ /$process_to_search/ && $column_to_search ~ /$word_to_search/ {print $1}')
+        # lsof : $(lsof -p $(pidof $process_to_search) |awk '/$word_to_search/ {print $9}')
+        #
+        # default search command is pidof
+        search_pid_command="pidof ${process_to_search}"
+        # if type ps
+        [ "${type_of_search}" = 'ps' ] && [ -z "${column_to_search}" ] && search_pid_command="ps ax |awk '\$5 ~ /${process_to_search}/ {print \$1}'"
+        [ "${type_of_search}" = 'ps' ] && [ -n "${column_to_search}" ] && [ -z "${word_to_search}" ] && search_pid_command="ps ax |awk '\$5 ~ /${process_to_search}/ && \$${column_to_search} ~ /${process_to_search}/ {print \$1}'"
+        [ "${type_of_search}" = 'ps' ] && [ -n "${column_to_search}" ] && [ -n "${word_to_search}" ] && search_pid_command="ps ax |awk '\$5 ~ /${process_to_search}/ && \$${column_to_search} ~ /${word_to_search}/ {print \$1}'"
+        # if type lsof
+        [ "${type_of_search}" = 'lsof' ] && [ -n "${column_to_search}" ] && [ -n "${word_to_search}" ] && search_pid_command="ps ax |awk '\$5 ~ /${process_to_search}/ {print \$1}' |while read pid; do lsof -p \${pid} |awk '\$${column_to_search} ~ /${word_to_search}/ {print \$2}'; done"
+        # process the command
+        process_pid=$(sh -c "${search_pid_command}" 2>/dev/null)
+        operand_error=$?
+        # test error if output is empty 
+        [ -z "${process_pid}" ] && operand_error=1
+        [ -z "${process_pid}" ] && echo -n ${ERROR}
+        [ -n "${process_pid}" ] && [ ! ${NUMERIC} ] && echo -n ${OK}
+        [ -n "${process_pid}" ] && [ ${NUMERIC} ] && echo -n ${process_pid}
+        [ ${operand_error:-0} -gt ${error:-0} ] && error=${operand_error}
         echo -n " "
     done
     echo
@@ -523,182 +561,44 @@ function check_pidof() {
     return ${error:-0}
 }
 
-# antivirus is installed
-function check_package_antivirus() {
-    check_package ds_agent
-}
-
-# antivirus install date
-function check_package_date_antivirus() {
-    check_package_date ds_agent
-}
-
-# antivirus release
-function check_package_release_antivirus() {
-    check_package_release ds_agent
-}
-
-# antivirus version
-function check_package_version_antivirus() {
-    check_package_version ds_agent
-}
-
-# ds_agent is installed
-function check_package_ds_agent() {
-    check_package ds_agent
-}
-
-# ds_agent install date
-function check_package_date_ds_agent() {
-    check_package_date ds_agent
-}
-
-# ds_agent release
-function check_package_release_ds_agent() {
-    check_package_release ds_agent
-}
-
-# ds_agent version
-function check_package_version_ds_agent() {
-    check_package_version ds_agent
-}
-
-# hardening is installed
-function check_package_hardening() {
-    check_package hardening
-}
-
-# hardening install date
-function check_package_date_hardening() {
-    check_package_date Hardening
-}
-
-# hardening release
-function check_package_release_hardening() {
-    check_package_release Hardening
-}
-
-# hardening version
-function check_package_version_hardening() {
-    check_package_version Hardening
-}
-
-# dovecot is running
-function check_pidof_dovecot() {
-    check_pidof dovecot
-}
-
-# dsmcad is running
-function check_pidof_dsmcad() {
-    check_pidof dsmcad
-}
-
-# haproxy is running
-function check_pidof_haproxy() {
-    check_pidof haproxy
-}
-
-# httpd is running
-function check_pidof_httpd() {
-    check_pidof httpd
-}
-
 # lightbot is running
 function check_pidof_lightbot() {
-    [ -n "$(ps ax |awk '$5 ~ /java/ && $7 == "lightbot.jar" {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error:-0}
-}
-
-# lighttpd is running
-function check_pidof_lighttpd() {
-    check_pidof lighttpd
-}
-
-# mysqld is running
-function check_pidof_mysqld() {
-    check_pidof mysqld
+    # [ -n "$(ps ax |awk '$5 ~ /java/ && $7 == "lightbot.jar" {print $1}')" ]
+    check_pidof java:ps:7:lightbot.jar
 }
 
 # munin is running
 function check_pidof_munin() {
-    [ -n "$(ps ax |awk '$5 ~ /perl/ && $7 ~ /munin-node/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error:-0}
+    check_pidof munin-node
 }
 
-# named is running
-function check_pidof_named() {
-    check_pidof named
+# munin_node is running
+function check_pidof_munin_node() {
+    # [ -n "$(ps ax |awk '$5 ~ /perl/ && $7 ~ /munin-node/ {print $1}')" ]
+    check_pidof perl:ps:7:munin-node
 }
 
-# nfsd is running
-function check_pidof_nfsd() {
-    check_pidof nfsd
-}
-
-# nscd is running
-function check_pidof_nscd() {
-    check_pidof nscd
-}
-
-# openvpn is running
-function check_pidof_openvpn() {
-    check_pidof openvpn
-}
-
-# pdns is running
-function check_pidof_pdns() {
-    check_pidof pdns
+# pdns_server is running
+function check_pidof_pdns_server() {
+    check_pidof pdns_server
 }
 
 # postfix is running
 function check_pidof_postfix() {
-    [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error:-0}
+    # [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
+    # check_pidof postfix\\/master:lsof:9:var\\/spool\\/postfix\\/pid\\/master.pid
+    check_pidof master
 }
 
 # postgrey is running
 function check_pidof_postgrey() {
-    check_pidof postgrey
-}
-
-# proftpd is running
-function check_pidof_proftpd() {
-    check_pidof proftpd
-}
-
-# rsyslogd is running
-function check_pidof_rsyslogd() {
-    check_pidof rsyslogd
-}
-
-# runsvdir is running
-function check_pidof_runsvdir() {
-    check_pidof runsvdir
-}
-
-# slapd is running
-function check_pidof_slapd() {
-    check_pifod slapd
-}
-
-# snmpd is running
-function check_pidof_snmpd() {
-    check_pidof snmpd
-}
-
-# sshd is running
-function check_pidof_sshd() {
-    check_pidof sshd
+    check_pidof postgrey:ps:6
 }
 
 # sshd_chroot is running
 function check_pidof_sshd_chroot() {
-    [ -n "$(ps ax |awk '$5 ~ /sshd/ && $9 == "/etc/ssh-chroot/sshd_config" {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error:-0}
+    # [ -n "$(ps ax |awk '$5 ~ /sshd/ && $9 == "/etc/ssh-chroot/sshd_config" {print $1}')" ]
+    check_pidof sshd:ps:9:ssh-chroot
 }
 
 # zabbix_agentd is running
@@ -715,6 +615,19 @@ function check_pidof_zabbix_server() {
 function check_processor_type() {
     uname -p 2>/dev/null 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error:-0}
+}
+
+# raid mdadm status
+function check_raid_mdadm_status() {
+    for dev in /dev/md*; do
+        if [ -b ${dev} ]; then
+            raid_mdadm_status=$(mdadm --detail ${dev} 2>/dev/null |awk '$1 ~ /State/ {print $3}')
+            [[ "${raid_mdadm_status}" =~ (clean|active) ]] && raid_mdadm_error=0 || raid_mdadm_error=1
+            [ ${raid_mdadm_error:-0} -gt ${error:-0} ] && error=${raid_mdadm_error}
+        fi
+    done
+    [ ${error:-0} -ne 0 ] && error=${ERR_UNDEFINED} && echo ${ERROR} || echo ${OK}
     return ${error:-0}
 }
 
@@ -771,6 +684,13 @@ done
 [ -z "${tests}" ] && exit=${ERR_TESTNOTFOUND}
 [ ${exit} -ne 0 ] && echo "ERROR: You must specify a valid test to run" >&2 && exit ${exit}
 
+# lock to prevent other process running
+LOCK="/tmp/.lock-${0##*/}"
+set -o noclobber
+(echo "$$" > $LOCK) 2>/dev/null && trap "rm ${LOCK}; exit" INT TERM || error=${ERR_LOCKED}
+set +o noclobber
+[ ${error:-0} -ne 0 ] && exit=${error} && echo "ERROR : check is LOCKED on ${hostname}. Please remove ${LOCK}" && exit ${exit}
+
 # show tests list
 [ ${QUIET} ] || echo "Testing services ${tests/ /} :"
 
@@ -779,6 +699,8 @@ for test in ${tests}; do
     # echo test
     [ ${QUIET} ] || echo -n "Testing ${test} ... "
     # launch test
+    error=0
+    # launch check_function_test, or check_function test
     type check_${test} >/dev/null 2>&1 && {
         check_${test}
         error=$?
@@ -794,10 +716,14 @@ done
 # if -s flag, show tests in error
 [ ${SUMMARY} ] && exec 1>&3 3>&-
 [ ${SUMMARY} ] && [ ! ${QUIET} ] && echo -n "Tests in error ... "
-[ ${SUMMARY} ] && echo ${errors}
+[ ${SUMMARY} ] && for error in ${errors}; do echo -n "${error} "; done
+[ ${SUMMARY} ] && [ ! ${QUIET} ] && echo
 
 # if -r flag, restart services in error
 [ ${RESTART} ] && [ -x '/usr/local/bin/restart' ] && /usr/local/bin/restart "${errors}"
+
+# unlock
+rm -f "${LOCK}" 2>/dev/null && trap - INT TERM
 
 # exit
 exit ${exit}
