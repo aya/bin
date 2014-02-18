@@ -5,6 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20131203 AYA : specific formated output for account_lists
 # 20131021 AYA : iostat implementation, PATH variable for crontab calls
 # 20130923 AYA : tests can be called with syntax like function_name_operand or function_name://operand
 # 20130917 AYA : tcp, ssl, http, https connections
@@ -20,7 +21,7 @@
 #
 # TODO: smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
 #
-RELEASE="0.9.5"
+RELEASE="0.9.6"
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # #
@@ -92,8 +93,9 @@ options:
         -o, --operand=<operand> passe un argument <operand> a tous les tests
         -p, --profile=<profil>  utilise le jeu de test pour le <profil>
         -q, --quiet             active le mode silencieux
-        -r, --restart           utilise la commande restart quand un test retourne une erreur
+        -r, --remote            affiche des retours chariot pour un appel du script a distance
         -s, --summary           affiche la liste des tests en erreur
+        -t, --table             affiche les listes dans un format compatible avec les tableurs
         -u, --update            force la mise a jour des fichiers de profiles et de fonctions
         -v, --version           affiche la version"
 }
@@ -101,7 +103,7 @@ options:
 # #
  #
 # check options
-while getopts "adhilno:p:qrsuv-:" Option; do
+while getopts "adhilno:p:qrstuv-:" Option; do
     case "$Option" in
         -)
             case $OPTARG in
@@ -138,11 +140,14 @@ while getopts "adhilno:p:qrsuv-:" Option; do
                 quiet)
                     QUIET=1
                     ;;
-                restart)
-                    RESTART=1
+                remote)
+                    REMOTE=1
                     ;;
                 summary)
                     SUMMARY=1
+                    ;;
+                table)
+                    TABLE=1
                     ;;
                 update)
                     UPDATE=$((${UPDATE:-0} + 1))
@@ -180,10 +185,13 @@ while getopts "adhilno:p:qrsuv-:" Option; do
             QUIET=1
             ;;
         r)
-            RESTART=1
+            REMOTE=1
             ;;
         s)
             SUMMARY=1
+            ;;
+        t)
+            TABLE=1
             ;;
         u)
             UPDATE=$((${UPDATE:-0} + 1))
@@ -292,29 +300,42 @@ done
 # #
  #
 # functions are defined from here
+TABLE_FIELD_PREFIX="\"hostname\";"
+TABLE_PREFIX="\"${HOSTNAME}\";"
+TABLE_FIELD_ACCOUNT="account"
+TABLE_FIELD_LASTLOG="lastlog"
 
 # active accounts
 function check_account_active() {
     account_active="$(grep -vE '.*:\*|:\!' /etc/shadow 2>/dev/null |awk -F: '{print $1}')"
     [ ${NUMERIC} ] && account_active="$(for account_active_user in ${account_active}; do id -u ${account_active_user}; done)"
+    [ ${TABLE} ] && account_active="${TABLE_FIELD_PREFIX}\"${TABLE_FIELD_ACCOUNT}\";\n$(for account_active_table in ${account_active}; do echo ${TABLE_PREFIX}\"${account_active_table}\"\;\\n; done)"
     error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
-    echo ${account_active}
+    echo -e ${account_active}
     return ${error:-0}
 }
 
 # account lastlog
 function check_account_lastlog() {
     [ ${QUIET} ] || echo
-    LANG=en_EN lastlog 2>/dev/null |awk '$2 ~ /(pts|tty)/' |\
+    LANG=en_EN lastlog 2>/dev/null |awk '$2 ~ /(pts|tty)/' | (\
+        # on prepare les entetes du tableau
+        [ ${TABLE} ] && { 
+            account_lastlog="${TABLE_FIELD_PREFIX}\"${TABLE_FIELD_ACCOUNT}\";\"${TABLE_FIELD_LASTLOG}\";"
+            [ ${REMOTE} ] && account_lastlog="${account_lastlog}"'\\n' || account_lastlog="${account_lastlog}\n"
+        }
+        # on prepare les lignes du tableau
         while read account_lastlog_user account_lastlog_pts account_lastlog_address account_lastlog_date; do 
             [ -z "${account_lastlog_user}" ] && continue
-            [ ${NUMERIC} ] && echo -n "$(id -u ${account_lastlog_user}): " || echo -n "${account_lastlog_user}: "
-            [ ${NUMERIC} ] && echo -n $(date -d "${account_lastlog_date}" +%s 2>/dev/null) || echo -n $(date -d "${account_lastlog_date}" +${DATE_FORMAT} 2>/dev/null)
-            [ ${QUIET} ] && echo -n '\\n' || echo
+            account_lastlog_line="${account_lastlog_user}: $(date -d "${account_lastlog_date}" +${DATE_FORMAT} 2>/dev/null)"
+            [ ${NUMERIC} ] && account_lastlog_line="$(id -u ${account_lastlog_user}): $(date -d "${account_lastlog_date}" +%s 2>/dev/null)"
+            [ ${TABLE} ] && account_lastlog_line="${TABLE_PREFIX}\"$(echo ${account_lastlog_line}| sed 's/: /\";\"/')\";" 
+            [ ${REMOTE} ] && account_lastlog="${account_lastlog}${account_lastlog_line}"'\\n' || account_lastlog="${account_lastlog}${account_lastlog_line}\n"
             account_lastlog_user=""; account_lastlog_pts=""; account_lastlog_address=""; account_lastlog_date=""
         done
+    echo -e ${account_lastlog}
+    )
     error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
-    [ ${QUIET} ] && echo
     return ${error:-0}
 }
 
@@ -1215,9 +1236,6 @@ done
 [ ${SUMMARY} ] && [ ! ${QUIET} ] && echo -n "Tests in error ... "
 [ ${SUMMARY} ] && for error in ${errors}; do echo -n "${error} "; done
 [ ${SUMMARY} ] && [ ! ${QUIET} ] && echo
-
-# if -r flag, restart services in error
-[ ${RESTART} ] && [ -x '/usr/local/bin/restart' ] && /usr/local/bin/restart "${errors}"
 
 # unlock
 rm -f "${LOCK}" 2>/dev/null && trap - INT TERM
