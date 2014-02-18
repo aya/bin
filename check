@@ -1,21 +1,27 @@
 #!/bin/bash
 #
-# test script for BPCE - linux server
-#
+# # test script for BPCE - linux server
+ #
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
-# 20130814/AYA : check open files for DB2
+# 20130816/AYA : test profiles
+# 20130814/AYA : check open files for DB2, numeric outputs for nagios
 # 20130731/AYA : first version, check PROXY-GROUPE services
-RELEASE=0.1.0
+RELEASE="0.2.0"
 
+# #
+ #
 # error codes
 exit=0
 ERR_BINNOTFOUND=1
 ERR_TESTNOTFOUND=2
 ERR_SERVICENOTRUNNING=4
+ERR_UNDEFINED=128
 
-# check binaries
+# #
+ #
+# binaries
 AWK=$(which awk)
 CAT=$(which cat)
 # DB2=$(which db2)
@@ -26,67 +32,88 @@ LSOF=/usr/sbin/lsof
 PIDOF=/sbin/pidof
 PS=$(which ps)
 
-[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${DB2}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] && exit=${ERR_BINNOTFOUND}
-[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
+# #
+ #
+# profiles
+PROFILES="DEFAULT PROXYGROUPE PPLDB2"
+# tests to launch in profiles
+DEFAULT="postfix"
+PROXYGROUPE="httpd named slapd_alice slapd_bfbp slapd_groupe postfix postfix_bp"
+PPLDB2="postfix system_open_files db2_open_files"
 
 # help
 function usage() {
-echo "Usage: $0 [options] args
-Script de test des serveurs linux de la BPCE
+echo "Usage: $0 [options] test [test [...]]
+Test des serveurs linux de la BPCE
 
 options:
-        -a, --all               lance tous les tests standards
+        -a, --all               lance tous les tests
         -d, --debug             active la mode de deboggage
         -h, --help              affiche ce message
-        -n, --numeric           retourne des reponses numeriques
+        -l, --list              affiche les jeux de tests pour tous les profils de serveurs
+        -n, --numeric           retourne uniquement des valeurs numeriques
+        -p, --profile=<profil>  utiliser le jeu de test pour le <profil> de serveur
         -q, --quiet             active le mode silencieux
         -v, --version           affiche la version"
 }
 
 # check parameters
-while getopts "adhnqv-:" Option; do
+while getopts "adhlnp:qv-:" Option; do
     case "$Option" in
         -)
             case $OPTARG in
-                "all")
-                    ALL="1"
+                all)
+                    ALL=1
                     ;;
-                "debug")
-                    DEBUG="1"
-                    set -x
+                debug)
+                    DEBUG=1
                     ;;
-                "help")
-                    HELP="1"
+                help)
+                    HELP=1
                     ;;
-                "numeric")
-                    NUMERIC="1"
+                list)
+                    LIST=1
                     ;;
-                "quiet")
-                    QUIET="1"
+                numeric)
+                    NUMERIC=1
                     ;;
-                "version")
-                    echo $(${BASENAME} $0) v${VERSION} && exit 0
+                profile)
+                    PROFILE="${PROFILE} ${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
+                    ;;
+                profile=*)
+                    PROFILE="${PROFILE} ${OPTARG#*=}"
+                    ;;
+                quiet)
+                    QUIET=1
+                    ;;
+                version)
+                    VERSION=1
                     ;;
             esac
             ;;
         a)
-            ALL="1"
+            ALL=1
             ;;
         d)
-            DEBUG="1"
-            set -x
+            DEBUG=1
             ;;
         h)
             HELP=1
             ;;
+        l)
+            LIST=1
+            ;;
         n)
             NUMERIC=1
+            ;;
+        p)
+            PROFILE="${PROFILE} ${OPTARG}"
             ;;
         q)
             QUIET=1
             ;;
         v)
-            echo $(${BASENAME} $0) v${VERSION} && exit 0
+            VERSION=1
             ;;
         *)
             usage
@@ -96,80 +123,142 @@ while getopts "adhnqv-:" Option; do
 done
 shift $(($OPTIND - 1))
 
-## BEGIN
+# # BEGIN
+ #
+# set debug
+[ ${DEBUG} ] && set -x
+# check binaries
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${DB2}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] && exit=${ERR_BINNOTFOUND}
+[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
+# show help
 [ ${HELP} ] && usage && exit 0
-[ ${QUIET} ] && exec > /dev/null
+# show version
 [ ${VERSION} ] && echo "$(basename $0) v${RELEASE}" && exit 0
+# list profiles
+[ ${LIST} ] && echo "Listing test profiles :" && \
+for profile in $PROFILES; do
+    echo ${profile}: ${!profile}
+done && exit 0
+# output numeric values for nagios
+[ ${NUMERIC} ] && OK=1 || OK="OK"
+[ ${NUMERIC} ] && ERROR=0 || ERROR="ERROR"
 
-# select default tests or get tests from argv
-[ ${ALL} ] && LIST="postfix" || LIST="$@"
-
-# validate inputs
-[ -n "$1" ] || [ ${ALL} ] || exit=$ERR_TESTNOTFOUND
-[ $exit -ne 0 ] && echo "ERROR: You must specify a test to run" && exit $exit
-
-
-function test_system_open_files() {
-    [ -z ${NUMERIC} ] && echo -n "Testing system open files ... "
-    cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
+# # test functions are defined here
+ #
+# 
+function system_open_files() {
+    set -o pipefail; cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
 }
 
-function test_db2_open_files() {
-    [ -z ${NUMERIC} ] && echo -n "Testing db2 open files ... "
-    [ -n ${NUMERIC} ] && for p in $(/sbin/pidof db2sysc); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
-    [ -z ${NUMERIC} ] && ps -eLf |awk '$10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11| sort -u |wc -l"; tables |getline opentables[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", threads: "thread[pid]", fichiers ouverts: "openfiles[pid]", tables ouvertes: "opentables[pid]}; nfiles="N=0; for p in $(/sbin/pidof db2sysc); do n=$(ls -l /proc/$p/fd 2>/dev/null |wc -l); N=$[ $N + $n ]; done; echo $N"; nfiles| getline allfiles; ntables="for p in $(/sbin/pidof db2sysc); do ls -l /proc/$p/fd 2>/dev/null |cut -d\" \" -f 11; done |sort -u |wc -l"; ntables| getline alltables; print "TOTAL fichiers ouverts: "totalfiles" ("allfiles"), tables ouvertes: "totaltables" ("alltables")"}'
+# 
+function db2_risques_closed_files() {
+    set -o pipefail; sudo -u entrepot /data/entrepot/sqllib/bin/db2 get snapshot for db on risques 2>/dev/null |grep closed |awk '{print $5}'
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
 }
 
-function test_httpd() {
-    echo -n "Testing httpd ... " \
-    && pidof httpd >/dev/null 2>&1 \
-    && echo OK || echo ERROR
+# 
+function db2_open_files() {
+    set -o pipefail; for p in $(/sbin/pidof db2sysc 2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED} && return ${error}
+    [ ${NUMERIC} ] || [ ${QUIET} ] || ps -eLf |awk '$10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11| sort -u |wc -l"; tables |getline opentables[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", threads: "thread[pid]", fichiers ouverts: "openfiles[pid]", tables ouvertes: "opentables[pid]}; nfiles="N=0; for p in $(/sbin/pidof db2sysc); do n=$(ls -l /proc/$p/fd 2>/dev/null |wc -l); N=$[ $N + $n ]; done; echo $N"; nfiles| getline allfiles; ntables="for p in $(/sbin/pidof db2sysc); do ls -l /proc/$p/fd 2>/dev/null |cut -d\" \" -f 11; done |sort -u |wc -l"; ntables| getline alltables; print "TOTAL fichiers ouverts: "totalfiles" ("allfiles"), tables ouvertes: "totaltables" ("alltables")"}' |sort -k 6
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
 }
 
-function test_named() {
-    echo -n "Testing named ... "
+# 
+function httpd() {
+    pidof httpd >/dev/null 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# 
+function named() {
     pidof named >/dev/null 2>&1
-    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
 }
 
-function test_slapd_alice() {
-    echo -n "Testing slapd_alice ... "
+# 
+function slapd_alice() {
     [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /alice/ {print $1}')" ]
-    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
 }
 
-function test_slapd_bfbp() {
-    echo -n "Testing slapd_bfbp ... "
+# 
+function slapd_bfbp() {
     [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /bfbp/ {print $1}')" ]
-    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
 }
 
-function test_slapd_groupe() {
-    echo -n "Testing slapd_groupe ... "
+# 
+function slapd_groupe() {
     [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /groupe/ {print $1}')" ]
-    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
 }
 
-function test_postfix() {
-    echo -n "Testing postfix ... "
+# 
+function postfix() {
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
-    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
 }
 
-function test_postfix_bp() {
-    echo -n "Testing postfix_bp ... "
+# 
+function postfix_bp() {
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix-bp\/pid\/master.pid/ {print $2}'; done)" ]
-    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    return ${error}
 }
 
-[ -z ${NUMERIC} ] && echo "Testing services ${LIST} :"
+# # parse inputs to determine wich tests will be launched
+ #
+# first get list from argv
+LIST="$@"
+# get tests from profiles
+for profile in ${PROFILE}; do
+    # check if profile is defined
+    [ -n "${!profile}" ] && LIST="${LIST} ${!profile}" || [ ${QUIET} ] || echo "WARNING: ${profile} is not a valid profile" >&2
+done
+# if -a flag, select all tests functions
+[ -n "${ALL}" ] && LIST="${LIST} $(compgen -A function |grep -vE '^(usage)$')"
+# if no input, fallback to the DEFAULT profile
+[ -n "${LIST}" ] || LIST="${DEFAULT}"
 
-for test in $LIST; do
-
-    # launch test
-    test_${test}
-    error=$? && [ $error -gt ${exit} ] && exit=$error
-
+# # clean the list
+ #
+# remove duplicate tests
+list="$(echo $LIST |xargs -n1 |awk '!t[$0]++' |xargs)"
+# remove invalid tests
+for test in ${list}; do
+    # check if function is defined
+    type ${test} >/dev/null 2>&1 && tests="${tests} ${test}" || [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
 done
 
-exit $exit
+# check we have things to test
+[ -z "${tests}" ] && exit=${ERR_TESTNOTFOUND}
+[ ${exit} -ne 0 ] && echo "ERROR: You must specify a valid test to run" >&2 && exit ${exit}
+
+# echo tests list
+[ ${QUIET} ] || echo "Testing services ${tests/ /} :"
+
+# launch tests
+for test in ${tests}; do
+    # echo test
+    [ ${QUIET} ] || echo -n "Testing ${test} ... "
+    # launch test
+    ${test}
+    # get error code
+    error=$?
+    # exit code will be the highest error code returned by all the tests
+    [ ${error} -gt ${exit} ] && exit=${error}
+done
+
+# exit
+exit ${exit}
