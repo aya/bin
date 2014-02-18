@@ -1,117 +1,170 @@
 #!/bin/bash
 #
-# test script for BPCE - proxy-groupe linux server
+# test script for BPCE - linux server
 #
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
-# History
-# 20130731 ya: first version, test each service on localhost
-RELEASE="0.0.1"
-
-# TODO
-# Implement more test on service configuration, listening ports, and data responses
+# History:
+# 20130814/AYA : check open files for DB2
+# 20130731/AYA : first version, check PROXY-GROUPE services
+RELEASE=0.1.0
 
 # error codes
 exit=0
 ERR_BINNOTFOUND=1
-ERR_HOSTUNREACHABLE=2
+ERR_TESTNOTFOUND=2
 ERR_SERVICENOTRUNNING=4
 
 # check binaries
 AWK=$(which awk)
-LSOF=$(which lsof)
-[ -z "${AWK}" ] || [ -z "${LSOF}" ] && exit=${ERR_BINNOTFOUND}
-[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" && exit $exit
+CAT=$(which cat)
+# DB2=$(which db2)
+DB2='/data/entrepot/sqllib/bin/db2'
+# LSOF=$(which lsof)
+LSOF=/usr/sbin/lsof
+# PIDOF=$(which pidof)
+PIDOF=/sbin/pidof
+PS=$(which ps)
+
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${DB2}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] && exit=${ERR_BINNOTFOUND}
+[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
+
+# help
+function usage() {
+echo "Usage: $0 [options] args
+Script de test des serveurs linux de la BPCE
+
+options:
+        -a, --all               lance tous les tests standards
+        -d, --debug             active la mode de deboggage
+        -h, --help              affiche ce message
+        -n, --numeric           retourne des reponses numeriques
+        -q, --quiet             active le mode silencieux
+        -v, --version           affiche la version"
+}
 
 # check parameters
-# [ "$1" = '-v' ] && VERBOSE=1 && shift
-while getopts "dhvq" Option; do
+while getopts "adhnqv-:" Option; do
     case "$Option" in
+        -)
+            case $OPTARG in
+                "all")
+                    ALL="1"
+                    ;;
+                "debug")
+                    DEBUG="1"
+                    set -x
+                    ;;
+                "help")
+                    HELP="1"
+                    ;;
+                "numeric")
+                    NUMERIC="1"
+                    ;;
+                "quiet")
+                    QUIET="1"
+                    ;;
+                "version")
+                    echo $(${BASENAME} $0) v${VERSION} && exit 0
+                    ;;
+            esac
+            ;;
+        a)
+            ALL="1"
+            ;;
         d)
             DEBUG="1"
             set -x
             ;;
-        v)
-            VERSION=1
+        h)
+            HELP=1
             ;;
-        f)
-            FORCE=1
+        n)
+            NUMERIC=1
             ;;
         q)
             QUIET=1
             ;;
+        v)
+            echo $(${BASENAME} $0) v${VERSION} && exit 0
+            ;;
         *)
-            echo 'Usage: $0 [options] args
-Script de test des fonctionnalites du serveur proxy-groupe @ BPCE
-
-options:
-        -d      active la mode de deboggage
-        -h      ce message
-        -v      affiche la version
-        -q      active le mode silencieux'
+            usage
             exit 0
             ;;
     esac
 done
 shift $(($OPTIND - 1))
 
-# script vars
-TEST_HOST="localhost"                                           # host to test
-TEST_LIST="httpd named slapd_alice slapd_bfbp slapd_groupe postfix postfix_bp"           # tests to launch
-
 ## BEGIN
+[ ${HELP} ] && usage && exit 0
 [ ${QUIET} ] && exec > /dev/null
 [ ${VERSION} ] && echo "$(basename $0) v${RELEASE}" && exit 0
 
+# select default tests or get tests from argv
+[ ${ALL} ] && LIST="postfix" || LIST="$@"
+
 # validate inputs
-[ -n "$1" ] && TEST_HOST="$1"
-ping -c 1 "${TEST_HOST}" >/dev/null 2>&1 || exit=$ERR_HOSTUNREACHABLE
-[ $exit -ne 0 ] && echo "ERROR: Host ${TEST_HOST} is unreachable" && exit $exit
-echo "Testing services on ${TEST_HOST} :"
+[ -n "$1" ] || [ ${ALL} ] || exit=$ERR_TESTNOTFOUND
+[ $exit -ne 0 ] && echo "ERROR: You must specify a test to run" && exit $exit
+
+
+function test_system_open_files() {
+    [ -z ${NUMERIC} ] && echo -n "Testing system open files ... "
+    cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
+}
+
+function test_db2_open_files() {
+    [ -z ${NUMERIC} ] && echo -n "Testing db2 open files ... "
+    [ -n ${NUMERIC} ] && for p in $(/sbin/pidof db2sysc); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
+    [ -z ${NUMERIC} ] && ps -eLf |awk '$10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11| sort -u |wc -l"; tables |getline opentables[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", threads: "thread[pid]", fichiers ouverts: "openfiles[pid]", tables ouvertes: "opentables[pid]}; nfiles="N=0; for p in $(/sbin/pidof db2sysc); do n=$(ls -l /proc/$p/fd 2>/dev/null |wc -l); N=$[ $N + $n ]; done; echo $N"; nfiles| getline allfiles; ntables="for p in $(/sbin/pidof db2sysc); do ls -l /proc/$p/fd 2>/dev/null |cut -d\" \" -f 11; done |sort -u |wc -l"; ntables| getline alltables; print "TOTAL fichiers ouverts: "totalfiles" ("allfiles"), tables ouvertes: "totaltables" ("alltables")"}'
+}
 
 function test_httpd() {
-	echo -n "Testing httpd ... " \
+    echo -n "Testing httpd ... " \
     && pidof httpd >/dev/null 2>&1 \
     && echo OK || echo ERROR
 }
 
 function test_named() {
-	echo -n "Testing named ... "
+    echo -n "Testing named ... "
     pidof named >/dev/null 2>&1
     [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
 }
 
 function test_slapd_alice() {
-	echo -n "Testing slapd_alice ... "
+    echo -n "Testing slapd_alice ... "
     [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /alice/ {print $1}')" ]
     [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
 }
 
 function test_slapd_bfbp() {
-	echo -n "Testing slapd_bfbp ... "
+    echo -n "Testing slapd_bfbp ... "
     [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /bfbp/ {print $1}')" ]
     [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
 }
 
 function test_slapd_groupe() {
-	echo -n "Testing slapd_groupe ... "
+    echo -n "Testing slapd_groupe ... "
     [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /groupe/ {print $1}')" ]
     [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
 }
 
 function test_postfix() {
-	echo -n "Testing postfix ... "
+    echo -n "Testing postfix ... "
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
     [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
 }
 
 function test_postfix_bp() {
-	echo -n "Testing postfix_bp ... "
+    echo -n "Testing postfix_bp ... "
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix-bp\/pid\/master.pid/ {print $2}'; done)" ]
     [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
 }
 
-for test in $TEST_LIST; do
+[ -z ${NUMERIC} ] && echo "Testing services ${LIST} :"
+
+for test in $LIST; do
 
     # launch test
     test_${test}
