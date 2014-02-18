@@ -5,6 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20140204 YA : release candidate 1.0rc1
 # 20140128 YA : cygwin compatibility, expect and pop command support for ssh connections
 # 20140108 YA : table formated output for account_* checks
 # 20131224 YA : remote execution
@@ -23,11 +24,10 @@
 # 20130814 YA : check open files for DB2, numeric output for supervision
 # 20130731 YA : first version for redhat, check few services
 #
-# TODO: implement POP
-# TODO: implement expect to catch password prompts
+# TODO: support multiple users for ssh connections
 # TODO: specific tests for smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
 #
-CHECK_RELEASE="1.0beta"
+CHECK_RELEASE="1.0rc1"
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
 TMP="/tmp"
 
@@ -107,19 +107,20 @@ options:
         -l, --list              affiche les jeux de tests de tous les profils
         -la, --list --all       affiche tous les jeux de tests disponibles
         -n, --numeric           retourne uniquement des valeurs numeriques
-        -p, --pop               utilise la commande pop pour executer les tests sur une liste de serveurs distants
+        -p, --pop               utilise la commande pop pour obtenir une liste de serveurs distants
         -q, --quiet             active le mode silencieux
-        -r, --return            affiche les resultats sur une ligne separes par un retour chariot
+        -r, --return-char       affiche les resultats sur une ligne separes par un retour chariot
         -s, --summary           affiche la liste des tests en erreur
         -t, --table             affiche les listes au format tableur
         -u, --update            force la mise a jour des fichiers de profiles et de fonctions
         -v, --version           affiche la version
+        -w, --password          demande un mot de passe pour se connecter aux serveurs distants
         -H, --host=<host>       lance les tests sur le <host> distant
         -O, --operand=<operand> passe un argument <operand> a tous les tests
         -P, --profile=<profil>  utilise le jeu de test defini pour le <profil>
             --prefix=<prefix>   utilise le <prefix> dans l'affichage des listes au format tableur
             --no-prefix         affiche les listes au format tableur sans prefixe
-            --prefix=%prefix%<prefix>    ajoute le <prefix> au %prefix% existant dans l'affichage des listes au format tableur
+            --prefix=<prefix>%prefix%    ajoute le <prefix> au %prefix% existant
         -U, --user=<user>       se connecte aux serveurs distants avec l'utilisateur <user>
         -W, --password=<passwd> se connecte aux serveurs distants avec le mot de passe <passwd>
 "
@@ -128,7 +129,7 @@ options:
 # #
  #
 # check options
-while getopts "acdfhilnpqrstuvH:O:P:U:W:-:" Option; do
+while getopts "acdfhilnpqrstuvwH:O:P:U:W:-:" Option; do
     case "$Option" in
         -)
             case $OPTARG in
@@ -173,10 +174,10 @@ while getopts "acdfhilnpqrstuvH:O:P:U:W:-:" Option; do
                     CHECK_POP=1
                     ;;
                 password)
-                    CHECK_PASSWORD="${CHECK_PASSWORD} ${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
+                    CHECK_PASSWORD=1
                     ;;
                 password=*)
-                    CHECK_PASSWORD="${CHECK_PASSWORD} ${OPTARG#*=}"
+                    PASSWORDS="${PASSWORDS} ${OPTARG#*=}"
                     ;;
                 no-prefix)
                     CHECK_NO_PREFIX=1
@@ -196,7 +197,7 @@ while getopts "acdfhilnpqrstuvH:O:P:U:W:-:" Option; do
                 quiet)
                     CHECK_QUIET=1
                     ;;
-                return)
+                return-char)
                     CHECK_RETURN=1
                     ;;
                 summary)
@@ -275,6 +276,9 @@ while getopts "acdfhilnpqrstuvH:O:P:U:W:-:" Option; do
         u)
             CHECK_UPDATE=$((${CHECK_UPDATE:-0} + 1))
             ;;
+        w)
+            CHECK_PASSWORD=1
+            ;;
         U)
             CHECK_USER="${CHECK_USER} ${OPTARG}"
             ;;
@@ -282,7 +286,7 @@ while getopts "acdfhilnpqrstuvH:O:P:U:W:-:" Option; do
             CHECK_VERSION=1
             ;;
         W)
-            CHECK_PASSWORD="${CHECK_PASSWORD} ${OPTARG}"
+            PASSWORDS="${PASSWORDS} ${OPTARG}"
             ;;
         *)
             usage
@@ -319,7 +323,7 @@ DEFAULT=""
 # this script (remote upgrade)
 CHECK_URL="http://10.100.11.80/tools/check"
 # get a list of servers from http requests
-POP_URL="http://10.100.11.80/tools/pop.php"
+CHECK_POP_URL="http://10.100.11.80/tools/pop.php"
 
 # date format
 CHECK_DATE_FORMAT="%d/%m/%Y"
@@ -332,23 +336,23 @@ HOSTNAME=$(hostname 2>/dev/null |tr '[a-z]' '[A-Z]')
 HOSTNAME=${HOSTNAME%%.*}
 
 # table columns
-CHECK_FIELD_UID="uid"
-CHECK_FIELD_GID="gid"
-CHECK_FIELD_DATE="date"
-CHECK_FIELD_ACCOUNT="account"
-CHECK_FIELD_ADDRESS="address"
-CHECK_FIELD_LASTLOG="last_login"
-CHECK_FIELD_DESCRIPTION="description"
-CHECK_FIELD_LOGIN_SHELL="shell"
-CHECK_FIELD_LOGIN_STATUS="status"
-CHECK_FIELD_LOGIN_SERVICES="services"
-CHECK_FIELD_PASSWORD_TYPE="password"
+CHECK_FIELD_UID='uid'
+CHECK_FIELD_GID='gid'
+CHECK_FIELD_DATE='date'
+CHECK_FIELD_ACCOUNT='account'
+CHECK_FIELD_ADDRESS='address'
+CHECK_FIELD_LASTLOG='last_login'
+CHECK_FIELD_DESCRIPTION='description'
+CHECK_FIELD_LOGIN_SHELL='shell'
+CHECK_FIELD_LOGIN_STATUS='status'
+CHECK_FIELD_LOGIN_SERVICES='services'
+CHECK_FIELD_PASSWORD_TYPE='password'
 
 CHECK_TABLE_FIELD_PREFIX="\"hostname\";"
 [ ${CHECK_ADD} ] && CHECK_TABLE_FIELD_PREFIX="\"hostname\";\"check\";"
 CHECK_TABLE_PREFIX="\"%CHECK_HOSTNAME%\";"
 [ ${CHECK_ADD} ] && CHECK_TABLE_PREFIX="\"%CHECK_HOSTNAME%\";\"%CHECK_FUNCNAME%\";"
-CHECK_TABLE_FIELD_ACCOUNT="\"${CHECK_FIELD_ACCOUNT}\";"
+CHECK_TABLE_FIELD_ACCOUNT='"'${CHECK_FIELD_ACCOUNT}'";'
 CHECK_TABLE_FIELD_LASTLOG="\"${CHECK_FIELD_LASTLOG}\";"
 CHECK_TABLE_FIELD_ADDRESS="\"${CHECK_FIELD_ADDRESS}\";"
 CHECK_TABLE_FIELD_UID="\"${CHECK_FIELD_UID}\";"
@@ -1547,18 +1551,24 @@ function get_functions() {
 
 # prepare table listing fields
 function get_table_field_prefix() {
-    table_field_prefix=${1/\%prefix\%/${CHECK_TABLE_FIELD_PREFIX}}
+    if [ ${BASH_VERSION:0:1} -lt 3 ]; then
+        table_field_prefix=${1/\\%prefix\\%/${CHECK_TABLE_FIELD_PREFIX}}
+    else
+        table_field_prefix=${1/\%prefix\%/${CHECK_TABLE_FIELD_PREFIX}}
+    fi
     table_field_prefix=${table_field_prefix:-${CHECK_TABLE_FIELD_PREFIX}}
     [ ${CHECK_NO_PREFIX} ] && table_field_prefix=""
 }
 
 # prepare table listing prefix
 function get_table_prefix() {
-    table_prefix=${CHECK_TABLE_PREFIX/\%CHECK_HOSTNAME\%/${HOSTNAME%%.*}}
-    table_prefix=${table_prefix/\%CHECK_FUNCNAME\%/$1}
-    [ ${BASH_VERSION:0:1} -le 3 ] &&\
-        table_prefix=${CHECK_TABLE_PREFIX/\\%CHECK_HOSTNAME\\%/${HOSTNAME%%.*}} &&\
+    if [ ${BASH_VERSION:0:1} -lt 3 ]; then
+        table_prefix=${CHECK_TABLE_PREFIX/\\%CHECK_HOSTNAME\\%/${HOSTNAME%%.*}}
         table_prefix=${table_prefix/\\%CHECK_FUNCNAME\\%/$1}
+    else
+        table_prefix=${CHECK_TABLE_PREFIX/\%CHECK_HOSTNAME\%/${HOSTNAME%%.*}}
+        table_prefix=${table_prefix/\%CHECK_FUNCNAME\%/$1}
+    fi
     [ ${CHECK_NO_PREFIX} ] && table_prefix=""
 }
 
@@ -1620,32 +1630,79 @@ done
     [ -z "${errors}" ] && [ ${CHECK_SUMMARY} ] && [ ! ${CHECK_QUIET} ] && echo
 )
 
+# pop function exists ?
+type pop >/dev/null 2>&1 || function pop {
+    which curl >/dev/null 2>&1 && curl --silent "${CHECK_POP_URL}?reset=1&prefix=$PREFIX" || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
+}
+
+[ ${CHECK_POP} ] && CHECK_HOST="${CHECK_HOST} $(pop -R)"
+[ ${CHECK_PASSWORD} ] && [ -n "${CHECK_HOST}" ] && echo -n "Password: " && read -s password && echo && [ -n "${password}" ] && PASSWORDS="${password} ${PASSWORDS}"
+
 # launch remote tests
 for host in ${CHECK_HOST}; do
+    user=""
+    # we currently accept only 1 login at a time
+    # TODO: expect to test each login/password, actually we keep only the first user
+    [ -n "${CHECK_USER}" ] && users="${CHECK_USER#"${CHECK_USER%%[![:space:]]*}"}" && user=${users%%[[:space:]]*}
+    # check if host contains a login@
+    case "${host}" in
+        *@*)
+            user=${host%@*}
+            host=${host#*@}
+            ;;
+    esac
     # check if host exists
-    ping ${ping_opt} ${host#*@} >/dev/null 2>&1
+    ping ${ping_opt} ${host} >/dev/null 2>&1
     error=$? && [ ${error} -gt ${exit} ] && exit=${CHECK_ERROR_HOST_DOWN}
     [ ${error} -ne 0 ] && echo "WARNING: ${host} is down" >&2 && continue
-    # some functions calls another functions, so we have to export all functions, not only the called function
-    # ssh -q ${host} "$(get_variables); function $(typeset -f ${check_function}); ${check_function} '${check_operand//,/ }';"
-    # export all local variables and functions to the remote shell
-    # ssh -q ${host} "$(get_variables); $(get_functions); ${check_function} '${check_operand//,/ }';"
-    ssh -q ${host} "$(get_variables); $(get_functions); i=0
-                    [ ${CHECK_SUMMARY} ] && exec 3>&1 >/dev/null
-                    for test in \${CHECK_TESTS}; do
-                        [ ${CHECK_QUIET} ] || echo -n 'Testing '\${test}' ... '
-                        error=0 \${CHECK_FUNCTIONS[\$i]} \${CHECK_OPERANDS[\$i]}
-                        error=\$? && [ \${error} -ne 0 ] && errors=\"\${errors} \${test}\"
-                        [ \${error} -gt \${exit:-0} ] && exit=\${error}
-                        i=\$((i+1))
-                    done
-                    [ ${CHECK_SUMMARY} ] && exec 1>&3 3>&-
-                    [ ${CHECK_SUMMARY} ] && [ ! ${CHECK_QUIET} ] && echo -n \"Tests in error on \${HOSTNAME%%.*} ... \"
-                    [ -n \"\${errors}\" ] && [ ${CHECK_SUMMARY} ] && echo \"\${errors# *}\"
-                    [ -z \"\${errors}\" ] && [ ${CHECK_SUMMARY} ] && [ ! ${CHECK_QUIET} ] && echo
-                    exit \${exit:-0}" </dev/null
-    # exit code will be the highest error code returned by all the tests
-    error=$? && [ ${error} -gt ${exit} ] && exit=${error}
+    # export all CHECK_* variables and local functions to the remote shell
+    SSH_COMMAND="$(get_variables); $(get_functions); i=0;
+        [ \${CHECK_SUMMARY} ] && exec 3>&1 >/dev/null
+        for test in \${CHECK_TESTS}; do
+            [ \${CHECK_QUIET} ] || echo -n 'Testing '\${test}' ... '
+            error=0 \${CHECK_FUNCTIONS[\$i]} \${CHECK_OPERANDS[\$i]}
+            error=\$? && [ \${error} -ne 0 ] && errors=\"\${errors} \${test}\"
+            [ \${error} -gt \${exit:-0} ] && exit=\${error}
+            i=\$((i+1))
+        done
+        [ \${CHECK_SUMMARY} ] && exec 1>&3 3>&-
+        [ \${CHECK_SUMMARY} ] && [ ! \${CHECK_QUIET} ] && echo -n \"Tests in error on \${HOSTNAME%%.*} ... \"
+        [ -n \"\${errors}\" ] && [ \${CHECK_SUMMARY} ] && echo \"\${errors# *}\"
+        [ -z \"\${errors}\" ] && [ \${CHECK_SUMMARY} ] && [ ! \${CHECK_QUIET} ] && echo
+        exit \${exit:-0}"
+    if [ -z "${PASSWORDS}" ]; then
+        ssh -q -o StrictHostKeyChecking=no ${user:-${USER}}@${host} "${SSH_COMMAND}" </dev/null
+        # exit code will be the highest error code returned by all the tests
+        error=$? && [ ${error} -gt ${exit} ] && exit=${error}
+    else
+        set ${PASSWORDS}
+        PASSWORD_COUNT=$#
+        expect <<- EOE
+set timeout 7
+match_max 1048576
+set index 0
+foreach pass {$PASSWORDS} {
+    set password(\$index) \$pass
+    incr index
+}
+set index 0
+set success 0
+set ssh_command {$SSH_COMMAND}
+spawn -noecho ssh -q -o NumberOfPasswordPrompts=${PASSWORD_COUNT} -o StrictHostKeyChecking=no ${user:-${USER}}@${host} "\$ssh_command"
+expect {
+    -re "\[P|p]assword: $" {
+        send "\$password(\$index)\r"
+        incr index
+        exp_continue
+    }
+}
+#puts \$expect_out(buffer)
+catch wait result
+exit [lindex \$result 3]
+EOE
+        # exit code will be the highest error code returned by all the tests
+        error=$? && [ ${error} -gt ${exit} ] && exit=${error}
+    fi
 done
 
 # unlock
