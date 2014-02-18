@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# test script for BPCE - proxy-groupe linux server
+#
+# Author: Yann Autissier <yann.autissier@anotherservice.com>
+#
+# History
+# 20130731 ya: first version, test each service on localhost
+RELEASE="0.0.1"
+
+# TODO
+# Implement more test on service configuration, listening ports, and data responses
+
+# error codes
+exit=0
+ERR_BINNOTFOUND=1
+ERR_HOSTUNREACHABLE=2
+ERR_SERVICENOTRUNNING=4
+
+# check binaries
+AWK=$(which awk)
+LSOF=$(which lsof)
+[ -z "${AWK}" ] || [ -z "${LSOF}" ] && exit=${ERR_BINNOTFOUND}
+[ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" && exit $exit
+
+# check parameters
+# [ "$1" = '-v' ] && VERBOSE=1 && shift
+while getopts "dhvq" Option; do
+    case "$Option" in
+        d)
+            DEBUG="1"
+            set -x
+            ;;
+        v)
+            VERSION=1
+            ;;
+        f)
+            FORCE=1
+            ;;
+        q)
+            QUIET=1
+            ;;
+        *)
+            echo 'Usage: $0 [options] args
+Script de test des fonctionnalites du serveur proxy-groupe @ BPCE
+
+options:
+        -d      active la mode de deboggage
+        -h      ce message
+        -v      affiche la version
+        -q      active le mode silencieux'
+            exit 0
+            ;;
+    esac
+done
+shift $(($OPTIND - 1))
+
+# script vars
+TEST_HOST="localhost"                                           # host to test
+TEST_LIST="httpd named slapd_alice slapd_bfbp slapd_groupe postfix postfix_bp"           # tests to launch
+
+## BEGIN
+[ ${QUIET} ] && exec > /dev/null
+[ ${VERSION} ] && echo "$(basename $0) v${RELEASE}" && exit 0
+
+# validate inputs
+[ -n "$1" ] && TEST_HOST="$1"
+ping -c 1 "${TEST_HOST}" >/dev/null 2>&1 || exit=$ERR_HOSTUNREACHABLE
+[ $exit -ne 0 ] && echo "ERROR: Host ${TEST_HOST} is unreachable" && exit $exit
+echo "Testing services on ${TEST_HOST} :"
+
+function test_httpd() {
+	echo -n "Testing httpd ... " \
+    && pidof httpd >/dev/null 2>&1 \
+    && echo OK || echo ERROR
+}
+
+function test_named() {
+	echo -n "Testing named ... "
+    pidof named >/dev/null 2>&1
+    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+}
+
+function test_slapd_alice() {
+	echo -n "Testing slapd_alice ... "
+    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /alice/ {print $1}')" ]
+    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+}
+
+function test_slapd_bfbp() {
+	echo -n "Testing slapd_bfbp ... "
+    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /bfbp/ {print $1}')" ]
+    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+}
+
+function test_slapd_groupe() {
+	echo -n "Testing slapd_groupe ... "
+    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /groupe/ {print $1}')" ]
+    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+}
+
+function test_postfix() {
+	echo -n "Testing postfix ... "
+    [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
+    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+}
+
+function test_postfix_bp() {
+	echo -n "Testing postfix_bp ... "
+    [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix-bp\/pid\/master.pid/ {print $2}'; done)" ]
+    [ $? -ne 0 ] && echo ERROR && return ${ERR_SERVICENOTRUNNING} || echo OK
+}
+
+for test in $TEST_LIST; do
+
+    # launch test
+    test_${test}
+    error=$? && [ $error -gt ${exit} ] && exit=$error
+
+done
+
+exit $exit
