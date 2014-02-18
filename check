@@ -5,10 +5,11 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
-# 20130816/AYA : test profiles
+# 20130819/AYA : BALE2 perimeter
+# 20130816/AYA : define group of tests in profiles
 # 20130814/AYA : check open files for DB2, numeric outputs for nagios
 # 20130731/AYA : first version, check PROXY-GROUPE services
-RELEASE="0.2.0"
+RELEASE="0.3.0"
 
 # #
  #
@@ -24,22 +25,26 @@ ERR_UNDEFINED=128
 # binaries
 AWK=$(which awk)
 CAT=$(which cat)
+CUT=$(which cut)
 # DB2=$(which db2)
 DB2='/data/entrepot/sqllib/bin/db2'
+HOSTNAME=$(which hostname)
+GREP=$(which grep)
 # LSOF=$(which lsof)
 LSOF=/usr/sbin/lsof
 # PIDOF=$(which pidof)
 PIDOF=/sbin/pidof
 PS=$(which ps)
+RPM=$(which rpm)
 
 # #
  #
 # profiles
-PROFILES="DEFAULT PROXYGROUPE PPLDB2"
+PROFILES="DEFAULT PROXYGROUPE DB2"
 # tests to launch in profiles
-DEFAULT="postfix"
+DEFAULT="ds_agent dsmcad postfix rsyslogd sshd snmpd"
 PROXYGROUPE="httpd named slapd_alice slapd_bfbp slapd_groupe postfix postfix_bp"
-PPLDB2="postfix system_open_files db2_open_files"
+DB2="system_open_files db2_open_files"
 
 # help
 function usage() {
@@ -128,7 +133,7 @@ shift $(($OPTIND - 1))
 # set debug
 [ ${DEBUG} ] && set -x
 # check binaries
-[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${DB2}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] && exit=${ERR_BINNOTFOUND}
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${DB2}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" ] && exit=${ERR_BINNOTFOUND}
 [ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
 # show help
 [ ${HELP} ] && usage && exit 0
@@ -146,74 +151,219 @@ done && exit 0
 # # test functions are defined here
  #
 # 
-function system_open_files() {
-    set -o pipefail; cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
+# db2 auth plugin
+function check_db2_auth_plugin() {
+    [ ${QUIET} ] || echo
+    for db2_instance in $(check_db2_instances); do
+        db2_auth_plugin="$(su ${db2_instance} -c 'DB2INSTANCE='${db2_instance}' ~/sqllib/adm/db2set |grep "DB2AUTH" |cut -d= -f2')"
+        echo "${db2_instance}: ${db2_auth_plugin}"
+    done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error}
 }
 
-# 
-function db2_risques_closed_files() {
-    set -o pipefail; sudo -u entrepot /data/entrepot/sqllib/bin/db2 get snapshot for db on risques 2>/dev/null |grep closed |awk '{print $5}'
+# db2 home directory
+function check_db2_homedir() {
+    [ ${QUIET} ] || echo
+    for db2_instance in $(check_db2_instances); do
+        db2_homedir=$(egrep "^${db2_instance}:" /etc/passwd | cut -d: -f 6);
+        echo "${db2_instance}: ${db2_homedir}"
+    done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error}
 }
 
-# 
-function db2_open_files() {
+# db2 instances
+function check_db2_instances() {
+    db2_instances="$(/opt/ibm/db2/*/bin/db2ilist 2>/dev/null)" || db2_instances=""
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    echo ${db2_instances}
+    return ${error}
+}
+
+# closed files by db2 on db risques
+function check_db2_risques_closed_files() {
+    set -o pipefail; su entrepot -c "~/sqllib/bin/db2 get snapshot for db on risques 2>/dev/null |awk '/Database files closed/ {print \$5}'"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# number of files, thread, unique files opened by db2sys
+function check_db2_open_files() {
     set -o pipefail; for p in $(/sbin/pidof db2sysc 2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED} && return ${error}
-    [ ${NUMERIC} ] || [ ${QUIET} ] || ps -eLf |awk '$10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11| sort -u |wc -l"; tables |getline opentables[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", threads: "thread[pid]", fichiers ouverts: "openfiles[pid]", tables ouvertes: "opentables[pid]}; nfiles="N=0; for p in $(/sbin/pidof db2sysc); do n=$(ls -l /proc/$p/fd 2>/dev/null |wc -l); N=$[ $N + $n ]; done; echo $N"; nfiles| getline allfiles; ntables="for p in $(/sbin/pidof db2sysc); do ls -l /proc/$p/fd 2>/dev/null |cut -d\" \" -f 11; done |sort -u |wc -l"; ntables| getline alltables; print "TOTAL fichiers ouverts: "totalfiles" ("allfiles"), tables ouvertes: "totaltables" ("alltables")"}' |sort -k 6
+    [ ${NUMERIC} ] || [ ${QUIET} ] || ps -eLf |awk 'BEGIN {totalfiles=0; totaltables=0; totalthreads=0; totalsockets=0} $10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(risques|papillon|entrepot)\" |sort -u |wc -l"; tables |getline opentables[pid]; sockets="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(socket)\" |sort -u |wc -l"; sockets |getline opensockets[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; totalthreads+=thread[pid]; totalsockets+=opensockets[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", fichiers: "openfiles[pid]", tables: "opentables[pid]", threads: "thread[pid]", sockets: "opensockets[pid]}; print "TOTAL fichiers: "totalfiles", tables: "totaltables", threads: "totalthreads", sockets: "totalsockets}' |sort -n -k 6
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error}
 }
 
-# 
-function httpd() {
+# ds_agent is running
+function check_ds_agent() {
+    pidof ds_agent >/dev/null 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# dsmcad is running
+function check_dsmcad() {
+    pidof dsmcad >/dev/null 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# hardware type
+function check_hardware_type() {
+    uname -i 2>/dev/null || uname -m 2>/dev/null
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# httpd is running
+function check_httpd() {
     pidof httpd >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
     return ${error}
 }
 
-# 
-function named() {
+# hostname
+function check_hostname() {
+    hostname -s 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# ifconfig
+function check_ip_addresses() {
+    set -o pipefail; addresses="$(ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    echo ${addresses}
+    return ${error}
+}
+
+# ifconfig eth0
+function check_ip_address() {
+    check_ip_address_eth0
+}
+
+# ifconfig eth0
+function check_ip_address_eth0() {
+    set -o pipefail; addresses="$(ifconfig eth0 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    echo ${addresses}
+    return ${error}
+}
+
+# install date 
+function check_install_date() {
+    install_date="$(rpm -q basesystem --queryformat '%{installtime}' 2>/dev/null)"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    [ ${NUMERIC} ] && echo ${install_date} || date -d @${install_date} +%d/%m/%Y
+    return ${error}
+}
+
+# kernel date
+function check_kernel_date() {
+    kernel_date="$(uname -v 2>/dev/null |awk '{$1=$2=""; print}')"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    [ ${NUMERIC} ] && date -d "${kernel_date}" +%s || date -d "${kernel_date}" +%d/%m/%Y
+    return ${error}
+}
+
+# kernel release
+function check_kernel_release() {
+    uname -r 2>/dev/null
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# kernel version
+function check_kernel_version() {
+    uname -v 2>/dev/null
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# named is running
+function check_named() {
     pidof named >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
     return ${error}
 }
 
-# 
-function slapd_alice() {
-    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /alice/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# 
-function slapd_bfbp() {
-    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /bfbp/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# 
-function slapd_groupe() {
-    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /groupe/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# 
-function postfix() {
+# postfix is running
+function check_postfix() {
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
     return ${error}
 }
 
-# 
-function postfix_bp() {
+# postfix_bp is running
+function check_postfix_bp() {
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix-bp\/pid\/master.pid/ {print $2}'; done)" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}  && echo ${ERROR} || echo ${OK}
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# processor type
+function check_processor_type() {
+    uname -p 2>/dev/null 2>/dev/null
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# release
+function check_release() {
+    cat /etc/redhat-release 2>/dev/null || lsb_release -d 2>/dev/null |sed \'s/^Description:[[:blank:]]*//\'
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    return ${error}
+}
+
+# rsyslogd is running
+function check_rsyslogd() {
+    pidof rsyslogd >/dev/null 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# slapd_alice is running
+function check_slapd_alice() {
+    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /alice/ {print $1}')" ]
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# slapd_bfbp is running
+function check_slapd_bfbp() {
+    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /bfbp/ {print $1}')" ]
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# slapd_groupe is running
+function check_slapd_groupe() {
+    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /groupe/ {print $1}')" ]
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# snmpd is running
+function check_snmpd() {
+    pidof snmpd >/dev/null 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# sshd is running
+function check_sshd() {
+    pidof sshd >/dev/null 2>&1
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error}
+}
+
+# number of open files
+function check_system_open_files() {
+    set -o pipefail; cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error}
 }
 
@@ -227,7 +377,7 @@ for profile in ${PROFILE}; do
     [ -n "${!profile}" ] && LIST="${LIST} ${!profile}" || [ ${QUIET} ] || echo "WARNING: ${profile} is not a valid profile" >&2
 done
 # if -a flag, select all tests functions
-[ -n "${ALL}" ] && LIST="${LIST} $(compgen -A function |grep -vE '^(usage)$')"
+[ -n "${ALL}" ] && LIST="${LIST} $(compgen -A function check_| sed 's/^check_//')"
 # if no input, fallback to the DEFAULT profile
 [ -n "${LIST}" ] || LIST="${DEFAULT}"
 
@@ -238,10 +388,10 @@ list="$(echo $LIST |xargs -n1 |awk '!t[$0]++' |xargs)"
 # remove invalid tests
 for test in ${list}; do
     # check if function is defined
-    type ${test} >/dev/null 2>&1 && tests="${tests} ${test}" || [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
+    type check_${test} >/dev/null 2>&1 && tests="${tests} ${test}" || [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
 done
 
-# check we have things to test
+# check we have valid tests
 [ -z "${tests}" ] && exit=${ERR_TESTNOTFOUND}
 [ ${exit} -ne 0 ] && echo "ERROR: You must specify a valid test to run" >&2 && exit ${exit}
 
@@ -253,7 +403,7 @@ for test in ${tests}; do
     # echo test
     [ ${QUIET} ] || echo -n "Testing ${test} ... "
     # launch test
-    ${test}
+    check_${test}
     # get error code
     error=$?
     # exit code will be the highest error code returned by all the tests
