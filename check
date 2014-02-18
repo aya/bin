@@ -5,6 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20130910 AYA : bash v2 compatibility
 # 20130826 AYA : wget profiles and functions from remote files
 # 20130824 AYA : pass arguments to tests, call restart on failed tests, factorize functions
 # 20130823 AYA : get profile from hostname, summary output for supervision, debian support
@@ -14,7 +15,7 @@
 # 20130814 AYA : check open files for DB2, numeric output for supervision
 # 20130731 AYA : first version for redhat, check few services
 #
-RELEASE="0.6.2"
+RELEASE="0.6.3"
 
 # #
  #
@@ -29,8 +30,11 @@ ERR_UPGRADEFAILED=32
 ERR_UNDEFINED=64
 ERR_LOCKED=128
 
-# error code goes through pipes
-set -o pipefail
+# need bash >= 3
+# [ ${BASH_VERSION:0:1} -ge 3 ] || exit 255
+
+# error code goes through pipes (need bash >= 3)
+[ ${BASH_VERSION:0:1} -ge 3 ] && set -o pipefail
 
 # #
  #
@@ -203,34 +207,33 @@ shift $(($OPTIND - 1))
 # show version
 [ ${VERSION} ] && echo "$(basename $0) v${RELEASE}" && exit 0
 
+# wget version
+WGET_OPTION="-T 3 --proxy=off -q"
+
 # update profiles and functions from remote host
-[ ${UPDATE:-0} -gt 1 ] && {
+[ ${UPDATE:-0} -ge 1 ] && {
     # get profiles from remote file
-    wget --proxy=off -q "${REMOTE_PROFILE}" -O "/tmp/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_PROFILE}" >&2
+    wget ${WGET_OPTION} "${REMOTE_PROFILE}" -O "/tmp/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_PROFILE}" >&2
     # if file is not empty, overwrite local file
     [ -s "/tmp/.$(basename $0)_profile.$$" ] && mv "/tmp/.$(basename $0)_profile.$$" $0_profile && chmod +r $0_profile || error=${ERR_UPGRADEFAILED}
     # get functions from remote file
-    wget --proxy=off -q "${REMOTE_FUNCTION}" -O "/tmp/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_FUNCTION}" >&2
+    wget ${WGET_OPTION} "${REMOTE_FUNCTION}" -O "/tmp/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_FUNCTION}" >&2
     # if file is not empty, overwrite local file
     [ -s "/tmp/.$(basename $0)_function.$$" ] && mv "/tmp/.$(basename $0)_function.$$" $0_function && chmod +r $0_function || error=${ERR_UPGRADEFAILED}
     # exit if upgrade failed
-    [ ${error:-0} -ne 0 ] && exit ${error}
+    [ ${error:-0} -ne 0 ] && echo "ERROR: Upgrade failed !" >&2 && exit ${error} || [ ${QUIET} ] || echo "INFO: Upgrade successful"
 }
 
 # Not documented : auto upgrade, overwrite this script !
 [ ${UPDATE:-0} -gt 1 ] && {
     [ ! ${QUIET} ] && echo -n "Do you really want to upgrade this script ? [y/N] : " && read UPGRADE
-    [[ ${QUIET} || ${UPGRADE} =~ ^(Y|y) ]] && {
-        wget --proxy=off -q "${REMOTE_SCRIPT}" -O "/tmp/.$(basename $0).$$" 2>/dev/null || error=${ERR_UPGRADEFAILED}
+    [ ${QUIET:-0} -ne 0 -o "${UPGRADE:0:1}" = "Y" -o "${UPGRADE:0:1}" = "y" ] && {
+        wget ${WGET_OPTION} "${REMOTE_SCRIPT}" -O "/tmp/.$(basename $0).$$" 2>/dev/null || error=${ERR_UPGRADEFAILED}
         [ ${error:-0} -ne 0 ] && echo "WARNING: Unable to wget ${REMOTE_SCRIPT}" >&2 && exit ${error:-0}
-        [ ! ${QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' /tmp/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${RELEASE}, continue ? [y/N] : " && read UPGRADE_OK
-        [[ ${QUIET} || ${UPGRADE_OK} =~ ^(Y|y) ]] && {
+        [ ! ${QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' /tmp/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${RELEASE}, continue ? [y/N] : " && read UPGRADE_NEW_RELEASE
+        [ ${QUIET:-0} -ne 0 -o "${UPGRADE_NEW_RELEASE:0:1}" = "Y" -o "${UPGRADE_NEW_RELEASE:0:1}" = "y" ] && {
             [ -s "/tmp/.$(basename $0).$$" ] && mv "/tmp/.$(basename $0).$$" $0 && chmod +x $0 || error=${ERR_UPGRADEFAILED}
-            [ ${error:-0} -ne 0 ] && {
-                echo "ERROR: Upgrade failed !" >&2
-            } || {
-                [ ! ${QUIET} ] && echo "INFO: Upgrade Successful"
-            }
+            [ ${error:-0} -ne 0 ] && echo "ERROR: Auto upgrade failed !" >&2 || [ ${QUIET} ] || echo "INFO: Auto upgrade successful"
         }
     }
 # exit
@@ -264,8 +267,17 @@ hostname="$(hostname -s)"
 # HOSTNAME=${hostname^^}
 HOSTNAME=$(hostname -s |tr '[a-z]' '[A-Z]')
 [ -z "${TESTS}" ] && for profile in $(compgen -v PROFILE_); do
-    [[ ${HOSTNAME} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
-    [[ ${HOSTNAME/-/} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
+    # # only bash > 3
+     #
+    # [[ ${HOSTNAME} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
+    # [[ ${HOSTNAME/-/} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
+    # # bash v2 compatible
+     #
+    #
+    case "${HOSTNAME/-/}" in
+        *${profile/PROFILE_/}*)
+            PROFILE="${PROFILE} ${profile}"
+    esac
 done
 # if no input, use DEFAULT tests
 [ -n "${TESTS}" ] || TESTS="${DEFAULT}"
@@ -303,15 +315,15 @@ function check_account_lastlog() {
 }
 
 # account last logged in users
-function check_account_last_login() {
+function check_account_login() {
     [ ${QUIET} ] || echo
     LANG=en_EN last 2>/dev/null |awk '$2 ~ /(pts|tty)/' |\
-        while read account_last_login_user account_last_login_pts account_last_login_address account_last_login_date; do 
-            [ -z "${account_last_login_user}" ] || [ "${account_last_login_user}" = "reboot" ] && continue
-            account_last_login_date="$(echo ${account_last_login_date} |awk '{print $1" "$2" "$3" "$4}')"
-            [ ${NUMERIC} ] && echo -n "$(id -u ${account_last_login_user}): " || echo -n "${account_last_login_user}: "
-            [ ${NUMERIC} ] && echo $(date -d "${account_last_login_date}" +%s 2>/dev/null) || echo $(date -d "${account_last_login_date}" +${DATE_FORMAT} 2>/dev/null)
-            account_last_login_user=""; account_last_login_pts=""; account_last_login_address=""; account_last_login_date=""
+        while read account_login_user account_login_pts account_login_address account_login_date; do 
+            [ -z "${account_login_user}" ] || [ "${account_login_user}" = "reboot" ] && continue
+            account_login_date="$(echo ${account_login_date} |awk '{print $1" "$2" "$3" "$4}')"
+            [ ${NUMERIC} ] && echo -n "$(id -u ${account_login_user}): " || echo -n "${account_login_user}: "
+            [ ${NUMERIC} ] && echo $(date -d "${account_login_date}" +%s 2>/dev/null) || echo $(date -d "${account_login_date}" +${DATE_FORMAT} 2>/dev/null)
+            account_login_user=""; account_login_pts=""; account_login_address=""; account_login_date=""
         done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error:-0}
@@ -326,7 +338,19 @@ function check_account_list() {
         while IFS=":" read account_list_user account_list_password account_list_uid account_list_gid account_list_description account_list_homedir account_list_loginshell; do
             [ -z "${account_list_user}" ] && continue
             # check login shell
-            [[ "${account_list_loginshell}" =~ /(usr/)?s?bin/(nologin|false) ]] && account_list_login_status='nologin' || account_list_login_status='enabled'
+            # only bash v3
+            # [[ "${account_list_loginshell}" =~ /(usr/)?s?bin/(nologin|false) ]] && account_list_login_status='nologin' || account_list_login_status='enabled'
+            case "${account_list_loginshell}" in
+                /sbin/nologin|/sbin/false)
+                    account_list_login_status='nologin'
+                ;;
+                /bin/*sh|/usr/bin/*sh)
+                    account_list_login_status='enabled'
+                ;;
+                *)
+                    account_list_login_status='unknown'
+                ;;
+            esac
             # check password
             account_list_shadow=$(cat /etc/shadow 2>/dev/null |grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $1 == "'${account_list_user}'" {print $2}')
             [ "${account_list_password}" = 'x' ] && account_password="${account_list_shadow}" || account_password="${account_list_password}"
@@ -342,7 +366,7 @@ function check_account_list() {
             [[ "${account_password}" = '!!' ]] && account_list_password_type='expired'
             [ "${account_password}" = '' ] && account_list_password_status='empty'
             # check last login
-            account_list_last_login="$(LANG=en_EN lastlog -u ${account_list_user} |sed 1d |awk '$2 ~ /pts/ {$1=$2=$3=""; print}; $2 ~ /tty/ {$1=$2=""; print}')"
+            account_list_last_login="$(LANG=en_EN lastlog -u ${account_list_user} 2>/dev/null |sed 1d |awk '$2 ~ /pts/ {$1=$2=$3=""; print}; $2 ~ /tty/ {$1=$2=""; print}')"
             [ -n "${account_list_last_login}" ] && account_list_last_login=$(date -d "${account_list_last_login}" +${DATE_FORMAT} 2>/dev/null) || account_list_last_login="never"
             # check if account is in use
             ls /var/spool/cron 2>/dev/null |grep ${account_list_user} >/dev/null && account_list_service="crontab" 
@@ -412,8 +436,11 @@ function check_account_with_sudo() {
     account_or_group_with_sudo="$(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null |awk '$0 !~ /^(#|$)/ && $2 ~ /=/ && $3 ~ /ALL/ {print $1}')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     for account_or_group in ${account_or_group_with_sudo}; do 
+        # getent will fail if group does not exist
+        [ ${BASH_VERSION:0:1} -ge 3 ] && set +o pipefail
         # group begins with %
-        [[ ${account_or_group} =~ ^% ]] && account_with_sudo="${account_with_sudo} $(getent group ${account_or_group/\%/} |awk 'BEGIN {FS=":"} {print $4}' |sed 's/,/ /')" || account_with_sudo="${account_with_sudo} ${account_or_group}"
+        [ ${account_or_group:0:1} = "%" ] && account_with_sudo="${account_with_sudo} $(getent group ${account_or_group/\%/} |awk 'BEGIN {FS=":"} {print $4}' |sed 's/,/ /g')" || account_with_sudo="${account_with_sudo} ${account_or_group}"
+        [ ${BASH_VERSION:0:1} -ge 3 ] && set -o pipefail
     done
     echo ${account_with_sudo} |xargs -n1 |awk '!t[$0]++' |xargs
     return ${error:-0}
@@ -495,14 +522,14 @@ function check_kernel_version() {
 
 # last boot time
 function check_last_reboot() {
-    last_reboot="$(last reboot |head -1 |awk '{print $5" "$6" "$7" "$8}')"
+    last_reboot="$(last reboot 2>/dev/null |head -1 |awk '{print $5" "$6" "$7" "$8}')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     [ ${NUMERIC} ] && echo $(date -d "${last_reboot}" +%s 2>/dev/null) || echo $(date -d "${last_reboot}" +${DATE_FORMAT} 2>/dev/null)
     return ${error:-0}
 }
 
 # number of files, unique files, threads and sockets opened by a process
-function check_openfiles() {
+function check_open_files() {
     for operand in $1 ${OPERAND}; do
         open_files=$(for pid in $(/sbin/pidof ${operand} 2>/dev/null); do ls -l /proc/${pid}/fd 2>/dev/null |sed 1d; done |wc -l)
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -632,7 +659,7 @@ function check_system_date() {
 }
 
 # number of open files
-function check_system_openfiles() {
+function check_system_open_files() {
     cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     return ${error:-0}
@@ -660,22 +687,8 @@ function check_system_release() {
 # select all tests
 [ -n "${ALL}" ] && TESTS="${TESTS} $(compgen -A function check_| sed 's/^check_//')"
 
-# # clean the list
+# #
  #
-# remove duplicate tests
-list="$(echo $TESTS |xargs -n1 |awk '!t[$0]++' |xargs)"
-# remove invalid tests
-for test in ${list}; do
-    # check if test function is defined, or belongs to a defined function
-    type check_${test} >/dev/null 2>&1 \
-    || type check_${test%_*} >/dev/null 2>&1
-    [ $? -eq 0 ] && tests="${tests} ${test}" || [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
-done
-
-# check we have valid tests
-[ -z "${tests}" ] && exit=${ERR_TESTNOTFOUND}
-[ ${exit} -ne 0 ] && echo "ERROR: You must specify a valid test to run" >&2 && exit ${exit}
-
 # lock to prevent other process running
 LOCK="/tmp/.lock-${0##*/}"
 set -o noclobber
@@ -683,24 +696,33 @@ set -o noclobber
 set +o noclobber
 [ ${error:-0} -ne 0 ] && exit=${error} && echo "ERROR : check is LOCKED on ${hostname}. Please remove ${LOCK}" && exit ${exit}
 
-# show tests list
-[ ${QUIET} ] || echo "Testing services ${tests/ /} :"
-
-# launch tests
+# #
+ #
+# remove duplicate tests
+tests="$(echo $TESTS |xargs -n1 |awk '!t[$0]++' |xargs)"
+# lauch valid tests
 for test in ${tests}; do
+    # check if function is defined, or search for a defined function and an operand
+    # type check_${test} >/dev/null 2>&1 || type check_${test%_*} >/dev/null 2>&1
+    check_function="check_${test}"; check_operand=""
+    while [ "${check_function}" != 'check' ]; do
+        type ${check_function} >/dev/null 2>&1 && break
+        [ -z "${check_operand}" ] && check_operand="${check_function##*_}" || check_operand="${check_function##*_}_${check_operand}"
+        check_function="${check_function%_*}"
+    done
+    # test does not exist
+    [ "${check_function}" = 'check' ] && {
+        [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
+        [ ${exit:-0} -gt ${ERR_TESTNOTFOUND} ] || exit=${ERR_TESTNOTFOUND}
+        continue
+    }
     # echo test
     [ ${QUIET} ] || echo -n "Testing ${test} ... "
     # launch test
     error=0
-    # launch check_function_test, or check_function test
-    type check_${test} >/dev/null 2>&1 && {
-        check_${test}
-        error=$?
-    } || {
-        check_${test%_*} ${test#*_}
-        error=$?
-    }
-    [ ${error} -ne 0 ] && errors="${errors} ${test}"
+    # launch check_the_function_name, or check_the_function name, or check_the function_name
+    ${check_function} ${check_operand}
+    error=$? && [ ${error} -ne 0 ] && errors="${errors} ${test}"
     # exit code will be the highest error code returned by all the tests
     [ ${error} -gt ${exit} ] && exit=${error}
 done
