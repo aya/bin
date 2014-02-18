@@ -5,6 +5,9 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20130924 TODO: smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
+# 20130923 AYA : tests can be called with syntax like function_name_operand or function_name://operand
+# 20130917 AYA : tcp, ssl, http, https connections
 # 20130910 AYA : bash v2 compatibility
 # 20130826 AYA : wget profiles and functions from remote files
 # 20130824 AYA : pass arguments to tests, call restart on failed tests, factorize functions
@@ -15,20 +18,26 @@
 # 20130814 AYA : check open files for DB2, numeric output for supervision
 # 20130731 AYA : first version for redhat, check few services
 #
-RELEASE="0.6.3"
+RELEASE="0.9.4"
 
 # #
  #
 # error codes
 exit=0
-ERR_BINNOTFOUND=1
-ERR_TESTNOTFOUND=2
-ERR_PROCESSNOTFOUND=4
-ERR_PACKAGENOTFOUND=8
-ERR_SERVICENOTFOUND=16
-ERR_UPGRADEFAILED=32
-ERR_UNDEFINED=64
-ERR_LOCKED=128
+ERROR_NOT_FOUND_ALL_BINARIES=1
+ERROR_NOT_FOUND_TEST=2
+ERROR_NOT_FOUND_PROCESS=3
+ERROR_NOT_FOUND_SERVICE=4
+ERROR_NOT_FOUND_PACKAGE=5
+ERROR_NOT_FOUND_PATTERN=6
+ERROR_CONNECTION_FAILED=8
+ERROR_RESPONSE_CODE=9
+ERROR_UPGRADE_FAILED=127
+ERROR_UNDEFINED=128
+ERROR_LOCKED=255
+
+VALID_RESPONSE_CODE_HTTP="200 301 302"
+VALID_RESPONSE_CODE_SMTP="200"
 
 # need bash >= 3
 # [ ${BASH_VERSION:0:1} -ge 3 ] || exit 255
@@ -58,10 +67,6 @@ RPM=$(which rpm 2>/dev/null)
 DEFAULT=""
 # this script (remote upgrade)
 REMOTE_SCRIPT="http://10.100.11.80/tools/check"
-# remote profile override
-REMOTE_PROFILE="http://10.100.11.80/tools/check_profile"
-# remote function override
-REMOTE_FUNCTION="http://10.100.11.80/tools/check_function"
 
 # date format
 DATE_FORMAT="%d/%m/%Y"
@@ -194,7 +199,7 @@ shift $(($OPTIND - 1))
 # #
  #
 # check binaries
-[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LAST}" ] ||[ -z "${LASTLOG}" ] ||  [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERR_BINNOTFOUND}
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LAST}" ] ||[ -z "${LASTLOG}" ] ||  [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERROR_NOT_FOUND_ALL_BINARIES}
 [ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
 
 # #
@@ -213,13 +218,13 @@ WGET_OPTION="-T 3 --proxy=off -q"
 # update profiles and functions from remote host
 [ ${UPDATE:-0} -ge 1 ] && {
     # get profiles from remote file
-    wget ${WGET_OPTION} "${REMOTE_PROFILE}" -O "/tmp/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_PROFILE}" >&2
+    wget ${WGET_OPTION} "${REMOTE_SCRIPT}_profile" -O "/tmp/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_SCRIPT}_profile" >&2
     # if file is not empty, overwrite local file
-    [ -s "/tmp/.$(basename $0)_profile.$$" ] && mv "/tmp/.$(basename $0)_profile.$$" $0_profile && chmod +r $0_profile || error=${ERR_UPGRADEFAILED}
+    [ -s "/tmp/.$(basename $0)_profile.$$" ] && mv "/tmp/.$(basename $0)_profile.$$" $0_profile && chmod +r $0_profile || error=${ERROR_UPGRADE_FAILED}
     # get functions from remote file
-    wget ${WGET_OPTION} "${REMOTE_FUNCTION}" -O "/tmp/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_FUNCTION}" >&2
+    wget ${WGET_OPTION} "${REMOTE_SCRIPT}_function" -O "/tmp/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${REMOTE_SCRIPT}_function" >&2
     # if file is not empty, overwrite local file
-    [ -s "/tmp/.$(basename $0)_function.$$" ] && mv "/tmp/.$(basename $0)_function.$$" $0_function && chmod +r $0_function || error=${ERR_UPGRADEFAILED}
+    [ -s "/tmp/.$(basename $0)_function.$$" ] && mv "/tmp/.$(basename $0)_function.$$" $0_function && chmod +r $0_function || error=${ERROR_UPGRADE_FAILED}
     # exit if upgrade failed
     [ ${error:-0} -ne 0 ] && echo "ERROR: Upgrade failed !" >&2 && exit ${error} || [ ${QUIET} ] || echo "INFO: Upgrade successful"
 }
@@ -228,11 +233,11 @@ WGET_OPTION="-T 3 --proxy=off -q"
 [ ${UPDATE:-0} -gt 1 ] && {
     [ ! ${QUIET} ] && echo -n "Do you really want to upgrade this script ? [y/N] : " && read UPGRADE
     [ ${QUIET:-0} -ne 0 -o "${UPGRADE:0:1}" = "Y" -o "${UPGRADE:0:1}" = "y" ] && {
-        wget ${WGET_OPTION} "${REMOTE_SCRIPT}" -O "/tmp/.$(basename $0).$$" 2>/dev/null || error=${ERR_UPGRADEFAILED}
+        wget ${WGET_OPTION} "${REMOTE_SCRIPT}" -O "/tmp/.$(basename $0).$$" 2>/dev/null || error=${ERROR_UPGRADE_FAILED}
         [ ${error:-0} -ne 0 ] && echo "WARNING: Unable to wget ${REMOTE_SCRIPT}" >&2 && exit ${error:-0}
-        [ ! ${QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' /tmp/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${RELEASE}, continue ? [y/N] : " && read UPGRADE_NEW_RELEASE
-        [ ${QUIET:-0} -ne 0 -o "${UPGRADE_NEW_RELEASE:0:1}" = "Y" -o "${UPGRADE_NEW_RELEASE:0:1}" = "y" ] && {
-            [ -s "/tmp/.$(basename $0).$$" ] && mv "/tmp/.$(basename $0).$$" $0 && chmod +x $0 || error=${ERR_UPGRADEFAILED}
+        [ ! ${QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' /tmp/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${RELEASE}, continue ? [y/N] : " && read UPGRADE_SCRIPT
+        [ ${QUIET:-0} -ne 0 -o "${UPGRADE_SCRIPT:0:1}" = "Y" -o "${UPGRADE_SCRIPT:0:1}" = "y" ] && {
+            [ -s "/tmp/.$(basename $0).$$" ] && mv "/tmp/.$(basename $0).$$" $0 && chmod +x $0 || error=${ERROR_UPGRADE_FAILED}
             [ ${error:-0} -ne 0 ] && echo "ERROR: Auto upgrade failed !" >&2 || [ ${QUIET} ] || echo "INFO: Auto upgrade successful"
         }
     }
@@ -262,18 +267,12 @@ exit ${error:-0}
 # get list of tests from argv
 TESTS="$@"
 # if no input, check hostname to define current profile
-hostname="$(hostname -s)"
+hostname="$(hostname -s 2>/dev/null)"
 # ^^ need bash v4
 # HOSTNAME=${hostname^^}
-HOSTNAME=$(hostname -s |tr '[a-z]' '[A-Z]')
+HOSTNAME=$(hostname -s 2>/dev/null |tr '[a-z]' '[A-Z]')
 [ -z "${TESTS}" ] && for profile in $(compgen -v PROFILE_); do
-    # # only bash > 3
-     #
-    # [[ ${HOSTNAME} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
-    # [[ ${HOSTNAME/-/} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
-    # # bash v2 compatible
-     #
-    #
+    # if we found a PROFILE_ variable that looks like the hostname
     case "${HOSTNAME/-/}" in
         *${profile/PROFILE_/}*)
             PROFILE="${PROFILE} ${profile}"
@@ -295,7 +294,7 @@ done
 function check_account_active() {
     account_active="$(grep -vE '.*:\*|:\!' /etc/shadow 2>/dev/null |awk -F: '{print $1}')"
     [ ${NUMERIC} ] && account_active="$(for account_active_user in ${account_active}; do id -u ${account_active_user}; done)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     echo ${account_active}
     return ${error:-0}
 }
@@ -307,10 +306,12 @@ function check_account_lastlog() {
         while read account_lastlog_user account_lastlog_pts account_lastlog_address account_lastlog_date; do 
             [ -z "${account_lastlog_user}" ] && continue
             [ ${NUMERIC} ] && echo -n "$(id -u ${account_lastlog_user}): " || echo -n "${account_lastlog_user}: "
-            [ ${NUMERIC} ] && echo $(date -d "${account_lastlog_date}" +%s 2>/dev/null) || echo $(date -d "${account_lastlog_date}" +${DATE_FORMAT} 2>/dev/null)
+            [ ${NUMERIC} ] && echo -n $(date -d "${account_lastlog_date}" +%s 2>/dev/null) || echo -n $(date -d "${account_lastlog_date}" +${DATE_FORMAT} 2>/dev/null)
+            [ ${QUIET} ] && echo -n '\\n' || echo
             account_lastlog_user=""; account_lastlog_pts=""; account_lastlog_address=""; account_lastlog_date=""
         done
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
+    [ ${QUIET} ] && echo
     return ${error:-0}
 }
 
@@ -322,19 +323,22 @@ function check_account_login() {
             [ -z "${account_login_user}" ] || [ "${account_login_user}" = "reboot" ] && continue
             account_login_date="$(echo ${account_login_date} |awk '{print $1" "$2" "$3" "$4}')"
             [ ${NUMERIC} ] && echo -n "$(id -u ${account_login_user}): " || echo -n "${account_login_user}: "
-            [ ${NUMERIC} ] && echo $(date -d "${account_login_date}" +%s 2>/dev/null) || echo $(date -d "${account_login_date}" +${DATE_FORMAT} 2>/dev/null)
+            [ ${NUMERIC} ] && echo -n $(date -d "${account_login_date}" +%s 2>/dev/null) || echo -n $(date -d "${account_login_date}" +${DATE_FORMAT} 2>/dev/null)
+            [ ${QUIET} ] && echo -n '\\n' || echo
             account_login_user=""; account_login_pts=""; account_login_address=""; account_login_date=""
         done
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
+    [ ${QUIET} ] && echo
     return ${error:-0}
 }
 
 # account list
 function check_account_list() {
     account_list="$(cat /etc/passwd 2>/dev/null |grep -vE '^(#|$)' |cut -d: -f1)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${account_list}
-    [ ${NUMERIC} ] || [ ${QUIET} ] || cat /etc/passwd 2>/dev/null |grep -vE '^(#|$)' |\
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
+    # echo ${account_list}
+    # [ ${NUMERIC} ] || [ ${QUIET} ] || cat /etc/passwd 2>/dev/null |grep -vE '^(#|$)' |\
+    cat /etc/passwd 2>/dev/null |grep -vE '^(#|$)' |\
         while IFS=":" read account_list_user account_list_password account_list_uid account_list_gid account_list_description account_list_homedir account_list_loginshell; do
             [ -z "${account_list_user}" ] && continue
             # check login shell
@@ -385,25 +389,27 @@ function check_account_list() {
             echo -n "last_login: ${account_list_last_login}, "
             echo -n "service: ${account_list_service}"
             # end of line for:  print results and accounts without password in RED
-            [ "${account_list_login_status}" = "enabled" ] && [ "${account_list_password_type}" = "empty" ] && echo -e "\e[0m" || echo
+            [ "${account_list_login_status}" = "enabled" ] && [ "${account_list_password_type}" = "empty" ] && echo -ne "\e[0m"
+            [ ${QUIET} ] && echo -n '\\n' || echo
             account_list_user=""; account_list_password=""; account_list_uid=""; account_list_gid=""; account_list_description=""; account_list_homedir=""; account_list_loginshell=""
             account_list_login_status=""; account_list_password_type="unknown"; account_list_shadow=""; account_list_last_login=""; account_list_service=""
         done
+    [ ${QUIET} ] && echo
     return ${error:-0}
 }
 
 # account logged in
 function check_account_logged_in() {
     account_logged_in="$(ps aux |awk '$7 ~ /pts|tty/ {print $1}' 2>/dev/null |sort -u)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     echo ${account_logged_in}
     return ${error:-0}
 }
 
 # account with crontab
 function check_account_with_crontab() {
-    [ ${NUMERIC} ] && account_with_crontab="$(ls -ln /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')" || account_with_crontab="$(ls -l /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    [ ${NUMERIC} ] && account_with_crontab="$(ls -ln /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')" || account_with_crontab="$(ls -l /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}' |sort -u)"
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     echo ${account_with_crontab}
     [ ${INFO} ] && for account_with_crontab_user in ${account_with_crontab}; do 
         cat /var/spool/cron/${account_with_crontab_user} /var/spool/cron/*/${account_with_crontab_user} 2>/dev/null |awk '$0 !~ /^(#|$)/ {print "'${account_with_crontab_user}': "$0}'
@@ -414,7 +420,7 @@ function check_account_with_crontab() {
 # account with privileges
 function check_account_with_privilege() {
     account_with_privilege="$(echo $(cat /etc/passwd 2>/dev/null |awk 'BEGIN {FS=":"} $3 == "0" {print $1}') $(check_account_with_sudo) |xargs -n1 |awk '!t[$0]++' |xargs)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     echo ${account_with_privilege}
     [ ${INFO} ] && for account_with_privilege_user in ${account_with_privilege}; do 
         echo ${account_with_privilege_user}
@@ -424,9 +430,9 @@ function check_account_with_privilege() {
 
 # account with process
 function check_account_with_process() {
-    [ ${NUMERIC} ] && account_process="$(ps aunx 2>/dev/null |awk '$7 == "?" {print $1}' |sort -u)" || account_process="$(ps aux 2>/dev/null |awk '$7 == "?" {print $1}' |sort -u)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${account_process}
+    [ ${NUMERIC} ] && account_with_process="$(ps aunx 2>/dev/null |awk '$7 == "?" {print $1}' |sort -u)" || account_process="$(ps aux 2>/dev/null |awk '$7 == "?" {print $1}' |sort -u)"
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
+    echo ${account_with_process}
     return ${error:-0}
 }
 
@@ -434,7 +440,7 @@ function check_account_with_process() {
 function check_account_with_sudo() {
     # user or group with sudo (root    ALL=(ALL)       ALL)
     account_or_group_with_sudo="$(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null |awk '$0 !~ /^(#|$)/ && $2 ~ /=/ && $3 ~ /ALL/ {print $1}')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     for account_or_group in ${account_or_group_with_sudo}; do 
         # getent will fail if group does not exist
         [ ${BASH_VERSION:0:1} -ge 3 ] && set +o pipefail
@@ -450,7 +456,7 @@ function check_account_with_sudo() {
 function check_account_without_password() {
     account_without_password="$(cat /etc/passwd /etc/shadow 2>/dev/null |grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $2 == "" {print $1}' |sort -u)"
     [ ${NUMERIC} ] && account_without_password="$(for account_without_password_user in ${account_without_password}; do id -u ${account_without_password_user}; done)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     echo ${account_without_password}
     return ${error:-0}
 }
@@ -458,50 +464,51 @@ function check_account_without_password() {
 # hardware type
 function check_hardware_type() {
     uname -i 2>/dev/null || uname -m 2>/dev/null
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # hostname
 function check_hostname() {
-    hostname -s 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    hostname -s 2>/dev/null
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # ifconfig
 function check_ip_addresses() {
     addresses="$(ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     echo ${addresses}
     return ${error:-0}
 }
 
 # ifconfig eth0
 function check_ip_address() {
-    check_ip_address_eth0
-}
-
-# ifconfig eth0
-function check_ip_address_eth0() {
-    addresses="$(ifconfig eth0 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${addresses}
-    return ${error:-0}
-}
-
-# ifconfig wlan0
-function check_ip_address_wlan0() {
-    addresses="$(ifconfig wlan0 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${addresses}
+    for operand in $@ ${OPERAND}; do
+        case "${operand}" in
+            *.*.*.*)
+                ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/' |grep "${operand}" >/dev/null
+                operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+                [ ${operand_error} -ne 0 ] && echo -n ${ERROR} || echo -n ${OK}
+                ;;
+            *)
+                addresses="$(ifconfig ${operand} 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
+                operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+                echo ${addresses}
+                ;;
+        esac
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # kernel date
 function check_kernel_date() {
     kernel_date="$(uname -v 2>/dev/null |awk '{$1=$2=""; print}')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     [ ${NUMERIC} ] && echo $(date -d "${kernel_date}" +%s 2>/dev/null) || echo $(date -d "${kernel_date}" +${DATE_FORMAT} 2>/dev/null)
     return ${error:-0}
 }
@@ -509,44 +516,44 @@ function check_kernel_date() {
 # kernel release
 function check_kernel_release() {
     uname -r 2>/dev/null
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # kernel version
 function check_kernel_version() {
     uname -v 2>/dev/null
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # last boot time
 function check_last_reboot() {
     last_reboot="$(last reboot 2>/dev/null |head -1 |awk '{print $5" "$6" "$7" "$8}')"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     [ ${NUMERIC} ] && echo $(date -d "${last_reboot}" +%s 2>/dev/null) || echo $(date -d "${last_reboot}" +${DATE_FORMAT} 2>/dev/null)
     return ${error:-0}
 }
 
 # number of files, unique files, threads and sockets opened by a process
 function check_open_files() {
-    for operand in $1 ${OPERAND}; do
+    for operand in $@ ${OPERAND}; do
         open_files=$(for pid in $(/sbin/pidof ${operand} 2>/dev/null); do ls -l /proc/${pid}/fd 2>/dev/null |sed 1d; done |wc -l)
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         [ -n "${open_files}" ] && echo -n "${open_files} "
     done
     echo
-    [ ${INFO} ] && for operand in $1 ${OPERAND}; do
+    [ ${INFO} ] && for operand in $@ ${OPERAND}; do
         pidof ${operand} >/dev/null 2>&1 && echo && ps -eLf |awk 'BEGIN {totalfiles=0; totalufiles=0; totalthreads=0; totalsockets=0} $10 ~ /'${operand}'/ {user[$2]=$1; date[$2]=$7; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |sed 1d |wc -l"; files |getline openfiles[pid]; ufiles="ls -l /proc/"pid"/fd 2>/dev/null |sed 1d |cut -d\" \" -f 11 |grep -vE \"(socket)\" |sort -u |wc -l"; ufiles |getline uniquefiles[pid]; sockets="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(socket)\" |sort -u |wc -l"; sockets |getline opensockets[pid]; totalopenfiles+=openfiles[pid]; totaluniquefiles+=uniquefiles[pid]; totalthreads+=thread[pid]; totalopensockets+=opensockets[pid]; print "user: "user[pid]", pid: "pid", date: "date[pid]", fichiers: "openfiles[pid]", uniques: "uniquefiles[pid]", threads: "thread[pid]", sockets: "opensockets[pid]}; print "TOTAL '${operand}' ... fichiers: "totalopenfiles", uniques: "totaluniquefiles", threads: "totalthreads", sockets: "totalopensockets}' 
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
     done
-    [ ${error:-0} -ne 0 ] && error=${ERR_UNDEFINED}
+    [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # package is installed
 function check_package() {
-    for operand in $1 ${OPERAND}; do
+    for operand in $@ ${OPERAND}; do
         rpm -q ${operand} >/dev/null 2>&1 \
         || dpkg -s ${operand} >/dev/null 2>&1
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -554,13 +561,13 @@ function check_package() {
         echo -n " "
     done
     echo
-    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    [ ${error:-0} -ne 0 ] && error=${ERROR_NOT_FOUND_PACKAGE}
     return ${error:-0}
 }
 
 # package install date
 function check_package_date() {
-    for operand in $1 ${OPERAND}; do
+    for operand in $@ ${OPERAND}; do
         package_date="$(rpm -q ${operand} --queryformat '%{installtime}' 2>/dev/null)" \
         || package_date="$(date -r /var/lib/dpkg/info/${operand}.list +%s 2>/dev/null)"
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -568,13 +575,13 @@ function check_package_date() {
         echo -n " "
     done
     echo
-    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    [ ${error:-0} -ne 0 ] && error=${ERROR_NOT_FOUND_PACKAGE}
     return ${error:-0}
 }
 
 # package release
 function check_package_release() {
-    for operand in $1 ${OPERAND}; do
+    for operand in $@ ${OPERAND}; do
         package_release="$(rpm -q ${operand} --queryformat '%{release}' 2>/dev/null)" \
         || package_release="$(dpkg-query -W -f '${Revision}' ${operand} 2>/dev/null)"
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -582,13 +589,13 @@ function check_package_release() {
         echo -n " "
     done
     echo
-    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    [ ${error:-0} -ne 0 ] && error=${ERROR_NOT_FOUND_PACKAGE}
     return ${error:-0}
 }
 
 # package version
 function check_package_version() {
-    for operand in $1 ${OPERAND}; do
+    for operand in $@ ${OPERAND}; do
         package_version="$(rpm -q ${operand} --queryformat '%{version}' 2>/dev/null)" \
         || package_version="$(dpkg-query -W -f '${Version}' ${operand} 2>/dev/null)"
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -596,13 +603,13 @@ function check_package_version() {
         echo -n " "
     done
     echo
-    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    [ ${error:-0} -ne 0 ] && error=${ERROR_NOT_FOUND_PACKAGE}
     return ${error:-0}
 }
 
 # service is running
 function check_pidof() {
-    for operand in $1 ${OPERAND}; do
+    for operand in $@ ${OPERAND}; do
         # search with pidof, ps, or lsof 
         # $operand looks like : process_to_search:type_of_search:column_to_search:word_to_search
         input=($(echo $operand |awk 'BEGIN{FS=":"} {print $1" "$2" "$3" "$4}'))
@@ -636,14 +643,14 @@ function check_pidof() {
         echo -n " "
     done
     echo
-    [ ${error:-0} -ne 0 ] && error=${ERR_PROCESSNOTFOUND}
+    [ ${error:-0} -ne 0 ] && error=${ERROR_NOT_FOUND_PROCESS}
     return ${error:-0}
 }
 
 # processor type
 function check_processor_type() {
     uname -p 2>/dev/null 2>/dev/null
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
@@ -653,7 +660,7 @@ function check_system_date() {
     || install_date=$(date -d "$(LANG=en_EN ls -alt /var/lib/dpkg/info/*.list 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null) \
     || install_date=$(date -d "$(LANG=en_EN ls -alt /var/log/installer/ 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null) \
     || install_date=$(date -d "$(LANG=en_EN ls -alt / 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null)
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     [ ${NUMERIC} ] && echo ${install_date} || echo $(date -d @${install_date} +${DATE_FORMAT} 2>/dev/null)
     return ${error:-0}
 }
@@ -661,7 +668,7 @@ function check_system_date() {
 # number of open files
 function check_system_open_files() {
     cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
@@ -670,18 +677,295 @@ function check_system_release() {
     lsb_release -d 2>/dev/null |sed 's/^Description:[[:blank:]]*//' \
     || cat /etc/redhat-release 2>/dev/null \
     || cat /etc/debian_version 2>/dev/null
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# tcp connection over ssl
+function check_ssl() {
+    SSL=1 check_tcp $@
+}
+
+# tcp connection over tls
+function check_starttls() {
+    STARTTLS=1 check_tls $@
+}
+
+# tcp connection over tls
+function check_starttls_ftp() {
+    PROT=ftp check_starttls $@
+}
+
+# tcp connection over tls
+function check_starttls_imap() {
+    PROT=imap check_starttls $@
+}
+
+# tcp connection over tls
+function check_starttls_pop3() {
+    PROT=pop3 check_starttls $@
+}
+
+# tcp connection over tls
+function check_starttls_smtp() {
+    PROT=smtp check_starttls $@
+}
+
+# tcp connection over tls
+function check_starttls_xmpp() {
+    PROT=xmpp check_starttls $@
+}
+
+# tcp connection over tls
+function check_tls() {
+    TLS=1 check_ssl $@
+}
+
+# tcp connection
+function check_tcp() {
+    for operand in $@ ${OPERAND}; do
+        case "${operand}" in
+            *:*)
+                host=${operand%%:*}
+                port=${operand##*:}
+                ;;
+            *)
+                port=${operand}
+                ;;
+        esac
+        which nc >/dev/null 2>&1 && check_tcp_command="nc -c -w 1 ${host:-127.0.0.1} ${port} </dev/null"
+        which timeout >/dev/null 2>&1 && TIMEOUT="timeout 1"
+        [ ${STARTTLS} ] && starttls="-starttls ${PROT:-smtp}"
+        [ ${TLS} ] && tls="-tls1"
+        [ ${SSL} ] && which openssl >/dev/null 2>&1 && check_tcp_command="${TIMEOUT:-} openssl s_client -connect ${host:-127.0.0.1}:${port} ${tls:-} ${starttls:-} </dev/null 2>&1 |grep CERTIFICATE"
+        [ -z "${check_tcp_command}" ] && error=${ERROR_NOT_FOUND_ALL_BINARIES} && echo -n ${ERROR} && continue
+        sh -c "${check_tcp_command}" >/dev/null 2>&1
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${ERROR_CONNECTION_FAILED_TCP}
+        [ ${operand_error} -ne 0 ] && echo -n ${ERROR} || echo -n ${OK}
+        echo -n " "
+    done
+    echo
+    return ${error:-0}
+}
+
+# https connection
+function check_https_tls() {
+    TLS=1 check_https $@
+}
+
+# https connection
+function check_https() {
+    SSL=1 check_http $@
+}
+
+# http connection
+function check_http() {
+    for operand in ${@:-127.0.0.1} ${OPERAND}; do
+        hostname=""; addr=""; host=""; port=""; url=""; pattern=""
+        # extract hostname, port, url, and pattern from the operand
+        # hostname can be an expression like user:pass@host#addr
+        case "${operand}" in
+            # hostname:port/url~pattern
+            *:*/*~*)
+                # ":" can be used twice, for user:pass or hostname:port
+                case "${operand}" in
+                    # user:pass@host:port/url~pattern == hostname:port/url~pattern
+                    *@*:*)
+                        hostname=${operand%:*}
+                        port_url_pattern=${operand##*:}
+                        port=${port_url_pattern%%/*}
+                        url_pattern=${port_url_pattern#*/}
+                        url="/${url_pattern%%~*}"
+                        pattern=${operand##*~}
+                        ;;
+                    # user:pass@host/url~pattern == hostname/url~pattern
+                    *:*@*)
+                        hostname=${operand%/*}
+                        url_pattern=${operand#*/}
+                        url="/${url_pattern%%~*}"
+                        pattern=${operand##*~}
+                        [ ${SSL} ] && port=443 || port=80
+                        ;;
+                esac
+                ;;
+            # hostname:port/url
+            *:*/*)
+                # ":" can be used twice, for user:pass or hostname:port
+                case "${operand}" in
+                    # user:pass@host:port/url == hostname:port/url
+                    *@*:*)
+                        hostname=${operand%:*}
+                        port_url=${operand##*:}
+                        port=${port_url%%/*}
+                        url="/${port_url#*/}"
+                        ;;
+                    # user:pass@host/url == hostname/url
+                    *:*@*)
+                        hostname=${operand%%/*}
+                        url="/${operand#*/}"
+                        [ ${SSL} ] && port=443 || port=80
+                        ;;
+                esac
+                ;;
+            # hostname:port~pattern
+            *:*~*)
+                # ":" can be used twice, for user:pass or hostname:port
+                case "${operand}" in
+                    # user:pass@host:port~pattern == hostname:port~pattern
+                    *@*:*)
+                        hostname=${operand%:*}
+                        port_pattern=${operand##*:}
+                        port="${port_pattern%%~*}"
+                        pattern=${port_pattern##*~}
+                        ;;
+                    # user:pass@host~pattern == hostname~pattern
+                    *:*@*)
+                        hostname=${operand%%~*}
+                        pattern=${operand##*~}
+                        ;;
+                esac
+                ;;
+            # hostname/url~pattern
+            */*~*)
+                hostname=${operand%%/*}
+                url_pattern=${operand#*/}
+                url="/${url_pattern%%~*}"
+                pattern=${url_pattern##*~}
+                [ ${SSL} ] && port=443 || port=80
+                ;;
+            # hostname~pattern
+            *~*)
+                hostname=${operand%%~*}
+                pattern=${operand##*~}
+                [ ${SSL} ] && port=443 || port=80
+                ;;
+            # hostname/url
+            */*)
+                hostname=${operand%%/*}
+                url="/${operand#*/}"
+                [ ${SSL} ] && port=443 || port=80
+                ;;
+            # hostname:port
+            *:*)
+                # ":" can be used twice, for user:pass or hostname:port
+                case "${operand}" in
+                    # user:pass@host:port == hostname:port
+                    *@*:*)
+                        hostname=${operand%:*}
+                        port=${operand##*:}
+                        ;;
+                    # user:pass@host == hostname
+                    *:*@*)
+                        hostname=${operand}
+                        [ ${SSL} ] && port=443 || port=80
+                        ;;
+                esac
+                ;;
+            # hostname
+            *)
+                hostname=${operand}
+                [ ${SSL} ] && port=443 || port=80
+                ;;
+        esac
+        # check the hostname to get the user, pass, host, and addr
+        case "${hostname}" in
+            # user:pass@host#addr
+            *:*@*#*)
+                user=${hostname%:*}
+                pass_host_addr=${hostname##*:}
+                pass=${pass_host_addr%%@*}
+                host_addr=${pass_host_addr#*@}
+                host="${host_addr%%#*}"
+                addr=${hostname##*#}
+                ;;
+            # user@host#addr
+            *@*#*)
+                user=${hostname%%@*}
+                host_addr=${hostname#*@}
+                host="${host_addr%%#*}"
+                addr=${host_addr##*#}
+                ;;
+            # user:pass@host
+            *:*@*)
+                user=${hostname%:*}
+                pass_host=${hostname##*:}
+                pass=${pass_host%%@*}
+                host="${pass_host#*@}"
+                ;;
+            # user@host
+            *@*)
+                user=${hostname%%@*}
+                host=${hostname#*@}
+                ;;
+            # host#addr
+            *#*)
+                host=${hostname%%#*}
+                addr=${hostname#*#}
+                ;;
+            # host
+            *)
+                host=${hostname}
+                ;;
+        esac
+        [ -z "${addr}" ] && addr="${host}"
+
+# echo "operand: "${operand}
+# echo "hostname: "$hostname
+# echo "user: "$user
+# echo "pass: "$pass
+# echo "host: "$host
+# echo "addr: "$addr
+# echo "port: "$port
+# echo "url: "$url
+# echo "pattern: "$pattern
+
+        which nc >/dev/null 2>&1 && check_http_command="nc -c -w 1 ${addr:-127.0.0.1} ${port:-80}"
+        which timeout >/dev/null 2>&1 && TIMEOUT="timeout 1"
+        [ ${TLS} ] && tls="-tls1"
+        [ ${SSL} ] && which openssl >/dev/null 2>&1 && check_http_command="${TIMEOUT:-} openssl s_client -quiet -connect ${addr:-127.0.0.1}:${port:-443} ${tls:-}"
+        [ -z "${check_http_command}" ] && error=${ERROR_NOT_FOUND_ALL_BINARIES} && echo -n ${ERROR} && continue
+        check_http_command="echo -e 'GET ${url:-/} HTTP/1.0\nHost: ${host:-localhost}\nUser-Agent: $(basename $0) v${RELEASE}\n\n' |${check_http_command}"
+        sh -c "${check_http_command}" 2>/dev/null |while read line; do
+            [ ${cpt:-0} -eq 0 ] && check_http_return=(${line}) && \
+            check_http_return_protocol=${check_http_return[0]} && check_http_return_code=${check_http_return[1]} && check_http_return_message=${check_http_return[2]}
+            case "${line}" in
+                *${pattern:-}*)
+                    for valid_code in ${VALID_RESPONSE_CODE_HTTP}; do
+                        # we are in a subshell, so we have to return a specific code (42) to tell that we found the pattern
+                        [ ${check_http_return_code:-0} -eq ${valid_code} ] && return 42
+                    done
+                    return ${ERROR_RESPONSE_CODE_HTTP}
+                    ;;
+            esac
+            # echo line $cpt: $line
+            cpt=$((${cpt} + 1))
+        done
+        # if subshell returned 42, then pattern has been found
+        operand_error=$? && [ ${operand_error} -ne 42 ] && error=${operand_error} && echo -n ${ERROR} || echo -n ${OK}
+        # if subshell returned 0, then pattern has not been found
+        [ ${operand_error} -eq 0 ] && error=${ERROR_NOT_FOUND_HTTP_PATTERN}
+        # if subshell returned 1, then tcp connection has failed
+        [ ${operand_error} -eq 1 ] && error=${ERROR_CONNECTION_FAILED_TCP}
+        echo -n " "
+    done
+    echo
+    return ${error:-0}
+}
+
+# check version
+function check_version() {
+    echo ${RELEASE}
+    error=$? && [ ${error} -ne 0 ] && error=${ERROR_UNDEFINED}
     return ${error:-0}
 }
 
 # load functions override
-[ -r "$(dirname $0)/check_function" ] && source "$(dirname $0)/check_function"
+[ -r "$0_function" ] && source "$0_function"
 
 # # -a flag
  #
 # list all tests
 [ ${LIST} ] && [ ${ALL} ] && \
-    echo "Listing tests :" && \
     compgen -A function check_ |sed 's/^check_//' && \
     exit 0
 # select all tests
@@ -692,9 +976,9 @@ function check_system_release() {
 # lock to prevent other process running
 LOCK="/tmp/.lock-${0##*/}"
 set -o noclobber
-(echo "$$" > $LOCK) 2>/dev/null && trap "rm ${LOCK}; exit" INT TERM || error=${ERR_LOCKED}
+(echo "$$" > $LOCK) 2>/dev/null && trap "rm ${LOCK}; exit" INT TERM || error=${ERROR_LOCKED}
 set +o noclobber
-[ ${error:-0} -ne 0 ] && exit=${error} && echo "ERROR : check is LOCKED on ${hostname}. Please remove ${LOCK}" && exit ${exit}
+[ ${error:-0} -ne 0 ] && exit=${error} && echo "ERROR : $(basename $0) is LOCKED on ${hostname}. Please remove ${LOCK}" && exit ${exit}
 
 # #
  #
@@ -707,13 +991,21 @@ for test in ${tests}; do
     check_function="check_${test}"; check_operand=""
     while [ "${check_function}" != 'check' ]; do
         type ${check_function} >/dev/null 2>&1 && break
-        [ -z "${check_operand}" ] && check_operand="${check_function##*_}" || check_operand="${check_function##*_}_${check_operand}"
-        check_function="${check_function%_*}"
+        case ${check_function} in
+            *://*)
+                [ -z "${check_operand}" ] && check_operand="${check_function##*://}" || check_operand="${check_function##*://}_${check_operand}"
+                check_function="${check_function%://*}"
+            ;;
+            *)
+                [ -z "${check_operand}" ] && check_operand="${check_function##*_}" || check_operand="${check_function##*_}_${check_operand}"
+                check_function="${check_function%_*}"
+            ;;
+        esac
     done
     # test does not exist
     [ "${check_function}" = 'check' ] && {
         [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
-        [ ${exit:-0} -gt ${ERR_TESTNOTFOUND} ] || exit=${ERR_TESTNOTFOUND}
+        [ ${exit:-0} -gt ${ERROR_NOT_FOUND_TEST} ] || exit=${ERROR_NOT_FOUND_TEST}
         continue
     }
     # echo test
@@ -721,7 +1013,7 @@ for test in ${tests}; do
     # launch test
     error=0
     # launch check_the_function_name, or check_the_function name, or check_the function_name
-    ${check_function} ${check_operand}
+    ${check_function} "${check_operand//,/ }"
     error=$? && [ ${error} -ne 0 ] && errors="${errors} ${test}"
     # exit code will be the highest error code returned by all the tests
     [ ${error} -gt ${exit} ] && exit=${error}
