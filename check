@@ -5,7 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
-# 20130924 TODO: smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
+# 20131021 AYA : iostat implementation, PATH variable for crontab calls
 # 20130923 AYA : tests can be called with syntax like function_name_operand or function_name://operand
 # 20130917 AYA : tcp, ssl, http, https connections
 # 20130910 AYA : bash v2 compatibility
@@ -18,7 +18,10 @@
 # 20130814 AYA : check open files for DB2, numeric output for supervision
 # 20130731 AYA : first version for redhat, check few services
 #
-RELEASE="0.9.4"
+# TODO: smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
+#
+RELEASE="0.9.5"
+PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # #
  #
@@ -461,6 +464,194 @@ function check_account_without_password() {
     return ${error:-0}
 }
 
+# disk I/O statistics
+function check_disk_stat() {
+    # from http://exchange.nagios.org/directory/Plugins/System-Metrics/Storage-Subsystem/check_diskstat/details
+    for disk in $@; do
+        DISK=${disk}
+        WARNING="300,10000,10000"
+        CRITICAL="400,20000,20000"
+
+        E_OK=0
+        E_WARNING=1
+        E_CRITICAL=2
+        E_UNKNOWN=3
+
+        # generate HISTFILE filename
+        HISTFILE=/var/tmp/check_diskstat.$DISK
+
+        # process thresholds
+        WARN_TPS=$(echo $WARNING | cut -d , -f 1)
+        WARN_READ=$(echo $WARNING | cut -d , -f 2)
+        WARN_WRITE=$(echo $WARNING | cut -d , -f 3)
+        CRIT_TPS=$(echo $CRITICAL | cut -d , -f 1)
+        CRIT_READ=$(echo $CRITICAL | cut -d , -f 2)
+        CRIT_WRITE=$(echo $CRITICAL | cut -d , -f 3)
+
+        if [ -z "$WARN_TPS" -o -z "$WARN_READ" -o -z "$WARN_WRITE" ]; then
+            echo "Need 3 values for warning threshold (tps,read,write)"
+            return $E_UNKNOWN
+        fi
+        if [ -z "$CRIT_TPS" -o -z "$CRIT_READ" -o -z "$CRIT_WRITE" ]; then
+            echo "Need 3 values for critical threshold (tps,read,write)"
+            return $E_UNKNOWN
+        fi
+                
+        if [ ! -f "/sys/block/$DISK/stat" ]; then
+            return $E_UNKNOWN
+        fi
+
+        NEWDISKSTAT=$(cat /sys/block/$DISK/stat)
+
+
+        if [ ! -f $HISTFILE ]; then
+            echo $NEWDISKSTAT >$HISTFILE
+            return $E_UNKNOWN
+        fi
+
+        [ -f $HISTFILE ] || return $E_UNKNOWN
+
+        OLDDISKSTAT=$(cat $HISTFILE)
+
+        if [ $? -ne 0 ]; then
+            return $E_UNKNOWN
+        fi
+
+        OLDDISKSTAT_TIME=$(stat $HISTFILE | grep Modify | sed 's/^.*: \(.*\)$/\1/')
+        OLDDISKSTAT_EPOCH=$(date -d "$OLDDISKSTAT_TIME" +%s)
+        NEWDISKSTAT_EPOCH=$(date +%s)
+
+        echo $NEWDISKSTAT >$HISTFILE
+        # now we have old and current stat; 
+        # let compare it
+        OLD_SECTORS_READ=$(echo $OLDDISKSTAT | awk '{print $3}')
+        NEW_SECTORS_READ=$(echo $NEWDISKSTAT | awk '{print $3}')
+        OLD_READ=$(echo $OLDDISKSTAT | awk '{print $1}')
+        NEW_READ=$(echo $NEWDISKSTAT | awk '{print $1}')
+        OLD_WRITE=$(echo $OLDDISKSTAT | awk '{print $5}')
+        NEW_WRITE=$(echo $NEWDISKSTAT | awk '{print $5}')
+
+        OLD_SECTORS_WRITTEN=$(echo $OLDDISKSTAT | awk '{print $7}')
+        NEW_SECTORS_WRITTEN=$(echo $NEWDISKSTAT | awk '{print $7}')
+
+        # kernel handles sectors by 512bytes
+        # http://www.mjmwired.net/kernel/Documentation/block/stat.txt
+        SECTORBYTESIZE=512
+
+        let "SECTORS_READ = $NEW_SECTORS_READ - $OLD_SECTORS_READ"
+        let "SECTORS_WRITE = $NEW_SECTORS_WRITTEN - $OLD_SECTORS_WRITTEN"
+        let "TIME = $NEWDISKSTAT_EPOCH - $OLDDISKSTAT_EPOCH"
+        [ $TIME -lt 1 ] && let "TIME = 1"
+        let "BYTES_READ_PER_SEC = $SECTORS_READ * $SECTORBYTESIZE / $TIME"
+        let "BYTES_WRITTEN_PER_SEC = $SECTORS_WRITE * $SECTORBYTESIZE / $TIME"
+        let "TPS=($NEW_READ - $OLD_READ + $NEW_WRITE - $OLD_WRITE) / $TIME"
+        let "KBYTES_READ_PER_SEC = $BYTES_READ_PER_SEC / 1024"
+        let "KBYTES_WRITTEN_PER_SEC = $BYTES_WRITTEN_PER_SEC / 1024"
+
+        EXITCODE=$E_OK
+
+        # check TPS
+        if [ $TPS -gt $WARN_TPS ]; then
+            if [ $TPS -gt $CRIT_TPS ]; then
+                EXITCODE=$E_CRITICAL
+            else
+                EXITCODE=$E_WARNING
+            fi
+        fi
+
+        # check read
+        if [ $BYTES_READ_PER_SEC -gt $WARN_READ ]; then
+            if [ $BYTES_READ_PER_SEC -gt $CRIT_READ ]; then
+                EXITCODE=$E_CRITICAL
+            else
+                [ "$EXITCODE" -lt $E_CRITICAL ] && EXITCODE=$E_WARNING
+            fi
+        fi
+
+        # check write
+        if [ $BYTES_WRITTEN_PER_SEC -gt $WARN_WRITE ]; then
+            if [ $BYTES_WRITTEN_PER_SEC -gt $CRIT_WRITE ]; then
+                EXITCODE=$E_CRITICAL
+            else
+                [ "$EXITCODE" -lt $E_CRITICAL ] && EXITCODE=$E_WARNING
+            fi
+        fi
+
+        if [ "${DISK_TPS}" ]; then
+            [ "${QUIET}" -o "${NUMERIC}" ] && echo "${TPS}" || echo "$TPS io/s"
+        elif [ "${DISK_READ}" ]; then
+            [ "${QUIET}" -o "${NUMERIC}" ] && echo "${BYTES_READ_PER_SEC}" || echo "${BYTES_READ_PER_SEC} b/s"
+        elif [ "${DISK_WRITE}" ]; then
+            [ "${QUIET}" -o "${NUMERIC}" ] && echo "${BYTES_WRITTEN_PER_SEC}" || echo "${BYTES_WRITTEN_PER_SEC} b/s"
+        else
+            [ "${QUIET}" -o "${NUMERIC}" ] && echo "${TPS} ${BYTES_READ_PER_SEC} ${BYTES_WRITTEN_PER_SEC}" || echo "$TPS io/s, read ${BYTES_READ_PER_SEC} b/s,  write ${BYTES_WRITTEN_PER_SEC} b/s"
+        fi
+        operand_error=$EXITCODE && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+    done
+    # [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk I/O statistics
+function check_disk_io() {
+    [ "${QUIET}" ] || echo
+    devs="${OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    for dev in ${devs}; do
+        if [ -L /sys/block/$dev/device ]; then
+            [ "${QUIET}" ] || echo -n "${dev}: "
+            DISK_TPS=1 check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk read statistics
+function check_disk_read() {
+    [ "${QUIET}" ] || echo
+    devs="${OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    for dev in ${devs}; do
+        if [ -L /sys/block/$dev/device ]; then
+            [ "${QUIET}" ] || echo -n "${dev}: "
+            DISK_READ=1 check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk write statistics
+function check_disk_write() {
+    [ "${QUIET}" ] || echo
+    devs="${OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    for dev in ${devs}; do
+        if [ -L /sys/block/$dev/device ]; then
+            [ "${QUIET}" ] || echo -n "${dev}: "
+            DISK_WRITE=1 check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk statistics
+function check_disk_stats() {
+    [ "${QUIET}" ] || echo
+    devs="${OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    for dev in ${devs}; do
+        if [ -L /sys/block/$dev/device ]; then
+            echo -n "${dev}: "
+            check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
 # hardware type
 function check_hardware_type() {
     uname -i 2>/dev/null || uname -m 2>/dev/null
@@ -733,7 +924,7 @@ function check_tcp() {
                 port=${operand}
                 ;;
         esac
-        which nc >/dev/null 2>&1 && check_tcp_command="nc -c -w 1 ${host:-127.0.0.1} ${port} </dev/null"
+        which nc >/dev/null 2>&1 && check_tcp_command="nc -w 1 ${host:-127.0.0.1} ${port} </dev/null"
         which timeout >/dev/null 2>&1 && TIMEOUT="timeout 1"
         [ ${STARTTLS} ] && starttls="-starttls ${PROT:-smtp}"
         [ ${TLS} ] && tls="-tls1"
@@ -919,7 +1110,7 @@ function check_http() {
 # echo "url: "$url
 # echo "pattern: "$pattern
 
-        which nc >/dev/null 2>&1 && check_http_command="nc -c -w 1 ${addr:-127.0.0.1} ${port:-80}"
+        which nc >/dev/null 2>&1 && check_http_command="nc -w 1 ${addr:-127.0.0.1} ${port:-80}"
         which timeout >/dev/null 2>&1 && TIMEOUT="timeout 1"
         [ ${TLS} ] && tls="-tls1"
         [ ${SSL} ] && which openssl >/dev/null 2>&1 && check_http_command="${TIMEOUT:-} openssl s_client -quiet -connect ${addr:-127.0.0.1}:${port:-443} ${tls:-}"
