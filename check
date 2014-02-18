@@ -1,16 +1,18 @@
 #!/bin/bash
 #
-# # test script for BPCE - linux server
+# # test script for linux server
  #
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
-# 20130821/AYA : user list
-# 20130819/AYA : BALE2 perimeter
+# 20130824/AYA : pass arguments to tests, call restart on failed tests, factorize functions
+# 20130823/AYA : get profile from hostname, summary output for supervision, debian support
+# 20130821/AYA : user account list
+# 20130819/AYA : package information
 # 20130816/AYA : define group of tests in profiles
-# 20130814/AYA : check open files for DB2, numeric outputs for nagios
-# 20130731/AYA : first version, check PROXY-GROUPE services
-RELEASE="0.4.0"
+# 20130814/AYA : check open files for DB2, numeric output for supervision
+# 20130731/AYA : first version for redhat, check few services
+RELEASE="0.6.0"
 
 # #
  #
@@ -19,7 +21,11 @@ exit=0
 ERR_BINNOTFOUND=1
 ERR_TESTNOTFOUND=2
 ERR_SERVICENOTRUNNING=4
+ERR_PACKAGENOTFOUND=8
 ERR_UNDEFINED=128
+
+# we need error code when using pipes
+set -o pipefail
 
 # #
  #
@@ -27,31 +33,29 @@ ERR_UNDEFINED=128
 AWK=$(which awk)
 CAT=$(which cat)
 CUT=$(which cut)
-# DB2=$(which db2)
-DB2='/data/entrepot/sqllib/bin/db2'
+DB2=$(which db2)
+DPKG=$(which dpkg)
 DSMC=$(which dsmc)
 HOSTNAME=$(which hostname)
 GREP=$(which grep)
 LASTLOG=$(which lastlog)
-# LSOF=$(which lsof)
-LSOF=/usr/sbin/lsof
-# PIDOF=$(which pidof)
-PIDOF=/sbin/pidof
+LSOF=$(which lsof)
+PIDOF=$(which pidof)
 PS=$(which ps)
 RPM=$(which rpm)
 
 # check binaries
-[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" ] && exit=${ERR_BINNOTFOUND}
+[ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${ERR_BINNOTFOUND}
 [ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
 
-# #
+# # you can here define some profiles that will launch a predefined set of tests
  #
 # profiles
-PROFILES="DEFAULT PROXYGROUPE DB2"
-# tests in profiles
-DEFAULT="ds_agent dsmcad postfix rsyslogd sshd snmpd"
-PROXYGROUPE="httpd named slapd_alice slapd_bfbp slapd_groupe postfix postfix_bp"
-DB2="system_open_files db2_open_files"
+DEFAULT="pidof_munin pidof_nscd pidof_postfix pidof_rsyslogd pidof_sshd pidof_zabbix_agentd"
+PROFILE_AS="pidof_apache2 pidof_lightbot pidof_mysqld pidof_openvpn"
+PROFILE_PROXY="pidof_dovecot pidof_haproxy pidof_lighttpd pidof_openvpn pidof_pdns pidof_postfix pidof_postgrey pidof_proftpd pidof_runsvdir pidof_sshd_chroot pidof_sogod"
+PROFILE_DB2="system_open_files db2_open_files"
+PROFILE_YANN="pidof_rsyslogd"
 
 # date format
 DATE_FORMAT="%d/%m/%Y"
@@ -59,7 +63,7 @@ DATE_FORMAT="%d/%m/%Y"
 # help
 function usage() {
 echo "Usage: $0 [options] test [test [...]]
-Test des serveurs linux de la BPCE
+Test de serveurs linux - v${RELEASE}
 
 options:
         -a, --all               lance tous les tests
@@ -68,13 +72,16 @@ options:
         -l, --list              affiche les jeux de tests de tous les profils
         -la, --list --all       affiche tous les jeux de tests disponibles
         -n, --numeric           retourne uniquement des valeurs numeriques
-        -p, --profile=<profil>  utiliser le jeu de test pour le <profil>
+        -o, --operand=<operand> passe <operand> en argument aux tests
+        -p, --profile=<profil>  utilise le jeu de test pour le <profil>
         -q, --quiet             active le mode silencieux
+        -r, --restart           utilise la commande restart quand un test retourne une erreur
+        -s, --summary           affiche la liste des tests en erreur
         -v, --version           affiche la version"
 }
 
-# check parameters
-while getopts "adhlnp:qv-:" Option; do
+# check options
+while getopts "adhlno:p:qrsv-:" Option; do
     case "$Option" in
         -)
             case $OPTARG in
@@ -93,6 +100,12 @@ while getopts "adhlnp:qv-:" Option; do
                 numeric)
                     NUMERIC=1
                     ;;
+                operand)
+                    OPERAND="${OPERAND} ${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
+                    ;;
+                operand=*)
+                    OPERAND="${OPERAND} ${OPTARG#*=}"
+                    ;;
                 profile)
                     PROFILE="${PROFILE} ${!OPTIND}"; OPTIND=$(( $OPTIND + 1 ))
                     ;;
@@ -101,6 +114,12 @@ while getopts "adhlnp:qv-:" Option; do
                     ;;
                 quiet)
                     QUIET=1
+                    ;;
+                restart)
+                    RESTART=1
+                    ;;
+                summary)
+                    SUMMARY=1
                     ;;
                 version)
                     VERSION=1
@@ -122,11 +141,20 @@ while getopts "adhlnp:qv-:" Option; do
         n)
             NUMERIC=1
             ;;
+        o)
+            OPERAND="${OPERAND} ${OPTARG}"
+            ;;
         p)
             PROFILE="${PROFILE} ${OPTARG}"
             ;;
         q)
             QUIET=1
+            ;;
+        r)
+            RESTART=1
+            ;;
+        s)
+            SUMMARY=1
             ;;
         v)
             VERSION=1
@@ -139,7 +167,7 @@ while getopts "adhlnp:qv-:" Option; do
 done
 shift $(($OPTIND - 1))
 
-# # BEGIN
+# # options triggers specific actions
  #
 # set debug
 [ ${DEBUG} ] && set -x
@@ -150,44 +178,73 @@ shift $(($OPTIND - 1))
 # list profiles
 [ ${LIST} ] && [ ! ${ALL} ] && \
     echo "Listing profiles :" && \
-    for profile in $PROFILES; do
-       echo ${profile}: ${!profile}
+    echo DEFAULT: ${DEFAULT} && \
+    for profile in $(compgen -v PROFILE_); do
+       echo ${profile/PROFILE_/}: ${!profile}
     done && exit 0
 # output numeric values for nagios
 [ ${NUMERIC} ] && OK=1 || OK="OK"
 [ ${NUMERIC} ] && ERROR=0 || ERROR="ERROR"
+# -s flag display only summary
+[ ${SUMMARY} ] && exec 3>&1 >/dev/null
+
+# # determine wich tests will be launched
+ #
+# set tests from argv
+TESTS="$@"
+# if no input, check hostname to define current profile
+hostname="$(hostname -s)"
+[ -z "${TESTS}" ] && for profile in $(compgen -v PROFILE_); do
+    [[ ${hostname^^} =~ ${profile/PROFILE_/} ]] && PROFILE="${PROFILE} ${profile}"
+done
+# if no input, use DEFAULT tests
+[ -n "${TESTS}" ] || TESTS="${DEFAULT}"
+# then add tests from profiles
+for profile in ${PROFILE}; do
+    # check if profile is defined
+    [ -n "${!profile}" ] && TESTS="${TESTS} ${!profile}" || [ ${QUIET} ] || echo "WARNING: ${profile} is not a valid profile" >&2
+done
 
 # # functions are defined from here
  #
 # 
 
+# active accounts
+function check_account_active() {
+    account_active="$(grep -vE '.*:\*|:\!' /etc/shadow 2>/dev/null |awk -F: '{print $1}')"
+    [ ${NUMERIC} ] && account_active="$(for account_active_user in ${account_active}; do id -u ${account_active_user}; done)"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    echo ${account_active}
+    return ${error:-0}
+}
+
 # account lastlog
 function check_account_lastlog() {
     [ ${QUIET} ] || echo
-    set -o pipefail; LANG=en_EN lastlog 2>/dev/null |awk '$2 !~ /\*\*/' |sed '1d' |\
+    LANG=en_EN lastlog 2>/dev/null |awk '$2 ~ /(pts|tty)/' |\
         while read account_lastlog_user account_lastlog_pts account_lastlog_address account_lastlog_date; do 
             [ -z "${account_lastlog_user}" ] && continue
             [ ${NUMERIC} ] && echo -n "$(id -u ${account_lastlog_user}): " || echo -n "${account_lastlog_user}: "
-            [ ${NUMERIC} ] && date -d "${account_lastlog_date}" +%s || date -d "${account_lastlog_date}" +${DATE_FORMAT}
+            [ ${NUMERIC} ] && echo $(date -d "${account_lastlog_date}" +%s 2>/dev/null) || echo $(date -d "${account_lastlog_date}" +${DATE_FORMAT} 2>/dev/null)
             account_lastlog_user=""; account_lastlog_pts=""; account_lastlog_address=""; account_lastlog_date=""
         done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # account last logged in users
 function check_account_last_login() {
     [ ${QUIET} ] || echo
-    set -o pipefail; LANG=en_EN last 2>/dev/null |awk '$2 ~ /pts/' |sed '$d' |\
+    LANG=en_EN last 2>/dev/null |awk '$2 ~ /(pts|tty)/' |\
         while read account_last_login_user account_last_login_pts account_last_login_address account_last_login_date; do 
             [ -z "${account_last_login_user}" ] || [ "${account_last_login_user}" = "reboot" ] && continue
             account_last_login_date="$(echo ${account_last_login_date} |awk '{print $1" "$2" "$3" "$4}')"
             [ ${NUMERIC} ] && echo -n "$(id -u ${account_last_login_user}): " || echo -n "${account_last_login_user}: "
-            [ ${NUMERIC} ] && date -d "${account_last_login_date}" +%s || date -d "${account_last_login_date}" +${DATE_FORMAT}
+            [ ${NUMERIC} ] && echo $(date -d "${account_last_login_date}" +%s 2>/dev/null) || echo $(date -d "${account_last_login_date}" +${DATE_FORMAT} 2>/dev/null)
             account_last_login_user=""; account_last_login_pts=""; account_last_login_address=""; account_last_login_date=""
         done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # account list
@@ -198,54 +255,47 @@ function check_account_list() {
     [ ${NUMERIC} ] || [ ${QUIET} ] || cat /etc/passwd 2>/dev/null |grep -vE '^(#|$)' |\
         while IFS=":" read account_list_user account_list_password account_list_uid account_list_gid account_list_description account_list_homedir account_list_loginshell; do
             [ -z "${account_list_user}" ] && continue
-            # check login status
-            [ "${account_list_loginshell}" = '/sbin/nologin' -o "${account_list_loginshell}" = '/bin/false' ] && account_list_login_status='nologin' || account_list_login_status='enabled'
-            # check password status
+            # check login shell
+            [[ "${account_list_loginshell}" =~ /(usr/)?s?bin/(nologin|false) ]] && account_list_login_status='nologin' || account_list_login_status='enabled'
+            # check password
             account_list_shadow=$(cat /etc/shadow 2>/dev/null |grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $1 == "'${account_list_user}'" {print $2}')
-            [ "${account_list_password}" = '*' ] && account_list_password_status='disabled' || account_list_password_status='unknown'
-            [ "${account_list_password}" = 'x' ] && [ "${account_list_shadow}" = '*' -o "${account_list_shadow}" = '!' ] && account_list_password_status='locked'
-            [ "${account_list_password}" = 'x' ] && [ "${account_list_shadow}" = '!!' ] && account_list_password_status='expired'
-            [ "${account_list_password}" = '' ] || [ "${account_list_password}" = 'x' -a "${account_list_shadow}" = '' ] && account_list_password_status='empty'
             [ "${account_list_password}" = 'x' ] && account_password="${account_list_shadow}" || account_password="${account_list_password}"
             # check password algorithm
-            echo "${account_password}" |grep -E '^\$(1|md5)\$' >/dev/null 2>&1 && account_list_password_status='md5'
-            echo "${account_password}" |grep -E '^\$(2|2a|2x|2y)\$' >/dev/null 2>&1 && account_list_password_status='blowfish'
-            echo "${account_password}" |grep -E '^\$(3)\$' >/dev/null 2>&1 && account_list_password_status='nt-hash'
-            echo "${account_password}" |grep -E '^\$(4)\$' >/dev/null 2>&1 && account_list_password_status='sha1'
-            echo "${account_password}" |grep -E '^\$(5)\$' >/dev/null 2>&1 && account_list_password_status='sha2-256'
-            echo "${account_password}" |grep -E '^\$(6)\$' >/dev/null 2>&1 && account_list_password_status='sha2-512'
+            echo "${account_password}" |grep -E '^\$(1|md5)\$' >/dev/null 2>&1 && account_list_password_type='md5'
+            echo "${account_password}" |grep -E '^\$(2|2a|2x|2y)\$' >/dev/null 2>&1 && account_list_password_type='blowfish'
+            echo "${account_password}" |grep -E '^\$(3)\$' >/dev/null 2>&1 && account_list_password_type='nt-hash'
+            echo "${account_password}" |grep -E '^\$(4)\$' >/dev/null 2>&1 && account_list_password_type='sha1'
+            echo "${account_password}" |grep -E '^\$(5)\$' >/dev/null 2>&1 && account_list_password_type='sha2-256'
+            echo "${account_password}" |grep -E '^\$(6)\$' >/dev/null 2>&1 && account_list_password_type='sha2-512'
+            # check password status
+            [[ "${account_password}" = '*' || "${account_password}" = '!' ]] && account_list_password_type='locked'
+            [[ "${account_password}" = '!!' ]] && account_list_password_type='expired'
+            [ "${account_password}" = '' ] && account_list_password_status='empty'
             # check last login
-            account_list_last_login="$(LANG=en_EN lastlog -u ${account_list_user} |sed 1d |awk '$2 ~! /**/ {$1=$2=$3=""; print}')"
-            [ -n "${account_list_last_login}" ] && account_list_last_login=$(date -d "${account_list_last_login}" +${DATE_FORMAT}) || account_list_last_login="never"
+            account_list_last_login="$(LANG=en_EN lastlog -u ${account_list_user} |sed 1d |awk '$2 ~ /pts/ {$1=$2=$3=""; print}; $2 ~ /tty/ {$1=$2=""; print}')"
+            [ -n "${account_list_last_login}" ] && account_list_last_login=$(date -d "${account_list_last_login}" +${DATE_FORMAT} 2>/dev/null) || account_list_last_login="never"
             # check if account is in use
             ls /var/spool/cron 2>/dev/null |grep ${account_list_user} >/dev/null && account_list_service="crontab" 
+            ls /var/spool/cron/* 2>/dev/null |grep ${account_list_user} >/dev/null && account_list_service="crontab" 
             ps aux 2>/dev/null |awk '$7 == "?" {print $1}' |grep ${account_list_user} >/dev/null && account_list_service="${account_list_service} process"
             [ -n "${account_list_service}" ] && account_list_service="$(echo ${account_list_service})" || account_list_service="none"
             # print results and accounts without password in RED
-            [ "${account_list_login_status}" = "enabled" ] && [ "${account_list_password_status}" = "empty" ] && echo -ne "\e[01;31m"
+            [ "${account_list_login_status}" = "enabled" ] && [ "${account_list_password_type}" = "empty" ] && echo -ne "\e[01;31m"
             echo -n "user: ${account_list_user}, "
             echo -n "uid: ${account_list_uid}, "
             echo -n "gid: ${account_list_gid}, "
-            echo -n "description: \"${account_list_description//\"/}\", "
+            echo -n "shell: ${account_list_loginshell}, "
+            # echo -n "description: \"${account_list_description//\"/}\", "
             echo -n "status: ${account_list_login_status}, "
-            echo -n "password: ${account_list_password_status}, "
+            echo -n "password: ${account_list_password_type}, "
             echo -n "last_login: ${account_list_last_login}, "
             echo -n "service: ${account_list_service}"
             # end of line for:  print results and accounts without password in RED
-            [ "${account_list_login_status}" = "enabled" ] && [ "${account_list_password_status}" = "empty" ] && echo -e "\e[0m" || echo
+            [ "${account_list_login_status}" = "enabled" ] && [ "${account_list_password_type}" = "empty" ] && echo -e "\e[0m" || echo
             account_list_user=""; account_list_password=""; account_list_uid=""; account_list_gid=""; account_list_description=""; account_list_homedir=""; account_list_loginshell=""
-            account_list_login_status=""; account_list_password_status=""; account_list_shadow=""; account_list_last_login=""; account_list_service=""
+            account_list_login_status=""; account_list_password_type="unknown"; account_list_shadow=""; account_list_last_login=""; account_list_service=""
         done
-    return ${error}
-}
-
-# active accounts
-function check_account_active() {
-    account_active="$(grep -vE '.*:\*|:\!' /etc/shadow |awk -F: '{print $1}')"
-    [ ${NUMERIC} ] && account_active="$(for account_active_user in ${account_active}; do id -u ${account_active_user}; done)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${account_active}
-    return ${error}
+    return ${error:-0}
 }
 
 # account logged in
@@ -253,18 +303,18 @@ function check_account_logged_in() {
     account_logged_in="$(ps aux |awk '$7 ~ /pts|tty/ {print $1}' 2>/dev/null |sort -u)"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${account_logged_in}
-    return ${error}
+    return ${error:-0}
 }
 
 # account with crontab
 function check_account_with_crontab() {
-    [ ${NUMERIC} ] && account_crontab="$(ls -ln /var/spool/cron 2>/dev/null |awk '{print $3}')" || account_crontab="$(ls /var/spool/cron 2>/dev/null)"
+    [ ${NUMERIC} ] && account_with_crontab="$(ls -ln /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')" || account_with_crontab="$(ls -l /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${account_crontab}
-    [ ${NUMERIC} ] || [ ${QUIET} ] || for account_crontab_user in ${account_crontab}; do 
-        cat /var/spool/cron/${account_crontab_user} |awk '$0 !~ /^(#|$)/ {print "'${account_crontab_user}': "$0}'
+    echo ${account_with_crontab}
+    [ ${NUMERIC} ] || [ ${QUIET} ] || for account_with_crontab_user in ${account_with_crontab}; do 
+        cat /var/spool/cron/${account_with_crontab_user} /var/spool/cron/*/${account_with_crontab_user} 2>/dev/null |awk '$0 !~ /^(#|$)/ {print "'${account_with_crontab_user}': "$0}'
     done
-    return ${error}
+    return ${error:-0}
 }
 
 # account with process
@@ -272,36 +322,16 @@ function check_account_with_process() {
     [ ${NUMERIC} ] && account_process="$(ps aunx 2>/dev/null |awk '$7 == "?" {print $1}' |sort -u)" || account_process="$(ps aux 2>/dev/null |awk '$7 == "?" {print $1}' |sort -u)"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${account_process}
-    return ${error}
+    return ${error:-0}
 }
 
 # active accounts
 function check_account_without_password() {
-    account_without_password="$(cat /etc/passwd /etc/shadow | grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $2 == "" {print $1}' |sort -u)"
+    account_without_password="$(cat /etc/passwd /etc/shadow 2>/dev/null | grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $2 == "" {print $1}' |sort -u)"
     [ ${NUMERIC} ] && account_without_password="$(for account_without_password_user in ${account_without_password}; do id -u ${account_without_password_user}; done)"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${account_without_password}
-    return ${error}
-}
-
-# antivirus is installed
-function check_antivirus() {
-    check_ds_agent
-}
-
-# antivirus version
-function check_antivirus_version() {
-    check_ds_agent_version
-}
-
-# antivirus release
-function check_antivirus_release() {
-    check_ds_agent_release
-}
-
-# antivirus install date
-function check_antivirus_date() {
-    check_ds_agent_date
+    return ${error:-0}
 }
 
 # db2 auth plugin
@@ -312,7 +342,7 @@ function check_db2_auth_plugin() {
         echo "${db2_instance}: ${db2_auth_plugin:-DB2}"
     done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # db2 home directory
@@ -323,7 +353,7 @@ function check_db2_homedir() {
         echo "${db2_instance}: ${db2_homedir}"
     done
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # db2 instances
@@ -331,122 +361,46 @@ function check_db2_instances() {
     db2_instances="$(/opt/ibm/db2/*/bin/db2ilist 2>/dev/null)" || db2_instances=""
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${db2_instances}
-    return ${error}
+    return ${error:-0}
 }
 
 # closed files by db2 on db risques
 function check_db2_risques_closed_files() {
-    db2_risques_closed_files=$(set -o pipefail; id entrepot >/dev/null 2>&1 && su entrepot -c "~/sqllib/bin/db2 get snapshot for db on risques 2>/dev/null |awk '/Database files closed/ {print \$5}'")
+    db2_risques_closed_files=$(id entrepot >/dev/null 2>&1 && su entrepot -c "~/sqllib/bin/db2 get snapshot for db on risques 2>/dev/null |awk '/Database files closed/ {print \$5}'")
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${db2_risques_closed_files}
-    return ${error}
+    return ${error:-0}
 }
 
 # number of files, thread, unique files opened by db2sys
 function check_db2_open_files() {
-    set -o pipefail; for p in $(/sbin/pidof db2sysc 2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED} && return ${error}
+    for p in $(/sbin/pidof db2sysc 2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done |wc -l
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED} && return ${error:-0}
     [ ${NUMERIC} ] || [ ${QUIET} ] || ps -eLf |awk 'BEGIN {totalfiles=0; totaltables=0; totalthreads=0; totalsockets=0} $10 == "db2sysc" {user[$2]=$1; agent[$2]=$11; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |wc -l"; files |getline openfiles[pid]; tables="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(risques|papillon|entrepot)\" |sort -u |wc -l"; tables |getline opentables[pid]; sockets="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(socket)\" |sort -u |wc -l"; sockets |getline opensockets[pid]; totalfiles+=openfiles[pid]; totaltables+=opentables[pid]; totalthreads+=thread[pid]; totalsockets+=opensockets[pid]; print "user: "user[pid]", agent: "agent[pid]", pid: "pid", fichiers: "openfiles[pid]", tables: "opentables[pid]", threads: "thread[pid]", sockets: "opensockets[pid]}; print "TOTAL fichiers: "totalfiles", tables: "totaltables", threads: "totalthreads", sockets: "totalsockets}' |sort -n -k 6
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
-}
-
-# ds_agent is installed
-function check_ds_agent() {
-    rpm -q ds_agent >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# ds_agent version
-function check_ds_agent_version() {
-    ds_agent_version="$(rpm -q ds_agent --queryformat '%{version}' 2>/dev/null)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${ds_agent_version}
-    return ${error}
-}
-
-# ds_agent release
-function check_ds_agent_release() {
-    ds_agent_release="$(rpm -q ds_agent --queryformat '%{release}' 2>/dev/null)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${ds_agent_release}
-    return ${error}
-}
-
-# ds_agent install date
-function check_ds_agent_date() {
-    ds_agent_date="$(rpm -q ds_agent --queryformat '%{installtime}' 2>/dev/null)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    [ ${NUMERIC} ] && echo ${ds_agent_date} || date -d "@${ds_agent_date}" +${DATE_FORMAT}
-    return ${error}
-}
-
-# dsmcad is running
-function check_dsmcad() {
-    pidof dsmcad >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# hardening is installed
-function check_hardening() {
-    rpm -q Hardening >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# hardening version
-function check_hardening_version() {
-    hardening_version="$(rpm -q Hardening --queryformat '%{version}' 2>/dev/null)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${hardening_version}
-    return ${error}
-}
-
-# hardening release
-function check_hardening_release() {
-    hardening_release="$(rpm -q Hardening --queryformat '%{release}' 2>/dev/null)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    echo ${hardening_release}
-    return ${error}
-}
-
-# hardening install date
-function check_hardening_date() {
-    hardening_date="$(rpm -q Hardening --queryformat '%{installtime}' 2>/dev/null)"
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    [ ${NUMERIC} ] && echo ${hardening_date} || date -d "@${hardening_date}" +${DATE_FORMAT}
-    return ${error}
+    return ${error:-0}
 }
 
 # hardware type
 function check_hardware_type() {
     uname -i 2>/dev/null || uname -m 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
-}
-
-# httpd is running
-function check_httpd() {
-    pidof httpd >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
+    return ${error:-0}
 }
 
 # hostname
 function check_hostname() {
     hostname -s 2>&1
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # ifconfig
 function check_ip_addresses() {
-    set -o pipefail; addresses="$(ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
+    addresses="$(ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${addresses}
-    return ${error}
+    return ${error:-0}
 }
 
 # ifconfig eth0
@@ -456,171 +410,368 @@ function check_ip_address() {
 
 # ifconfig eth0
 function check_ip_address_eth0() {
-    set -o pipefail; addresses="$(ifconfig eth0 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
+    addresses="$(ifconfig eth0 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
     echo ${addresses}
-    return ${error}
+    return ${error:-0}
+}
+
+# ifconfig wlan0
+function check_ip_address_wlan0() {
+    addresses="$(ifconfig wlan0 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
+    echo ${addresses}
+    return ${error:-0}
 }
 
 # kernel date
 function check_kernel_date() {
     kernel_date="$(uname -v 2>/dev/null |awk '{$1=$2=""; print}')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    [ ${NUMERIC} ] && date -d "${kernel_date}" +%s || date -d "${kernel_date}" +${DATE_FORMAT}
-    return ${error}
+    [ ${NUMERIC} ] && echo $(date -d "${kernel_date}" +%s 2>/dev/null) || echo $(date -d "${kernel_date}" +${DATE_FORMAT} 2>/dev/null)
+    return ${error:-0}
 }
 
 # kernel release
 function check_kernel_release() {
     uname -r 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # kernel version
 function check_kernel_version() {
     uname -v 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # last boot time
 function check_last_reboot() {
     last_reboot="$(last reboot |head -1 |awk '{print $5" "$6" "$7" "$8}')"
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    [ ${NUMERIC} ] && date -d "${last_reboot}" +%s || date -d "${last_reboot}" +${DATE_FORMAT}
-    return ${error}
+    [ ${NUMERIC} ] && echo $(date -d "${last_reboot}" +%s 2>/dev/null) || echo $(date -d "${last_reboot}" +${DATE_FORMAT} 2>/dev/null)
+    return ${error:-0}
+}
+
+# package is installed
+function check_package() {
+    for operand in $1 ${OPERAND}; do
+        rpm -q ${operand} >/dev/null 2>&1 \
+        || dpkg -s ${operand} >/dev/null 2>&1
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package:${operand}"
+        [ ${operand_error} -ne 0 ] && echo -n ${ERROR} || echo -n ${OK}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    return ${error:-0}
+}
+
+# package install date
+function check_package_date() {
+    for operand in $1 ${OPERAND}; do
+        package_date="$(rpm -q ${operand} --queryformat '%{installtime}' 2>/dev/null)" \
+        || package_date="$(date -r /var/lib/dpkg/info/${operand}.list +%s 2>/dev/null)"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package_date:${operand}"
+        [ ${NUMERIC} ] && echo -n ${package_date} || echo -n $(date -d "@${package_date}" +${DATE_FORMAT} 2>/dev/null)
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    return ${error:-0}
+}
+
+# package release
+function check_package_release() {
+    for operand in $1 ${OPERAND}; do
+        package_release="$(rpm -q ${operand} --queryformat '%{release}' 2>/dev/null)" \
+        || package_release="$(dpkg-query -W -f '${Revision}' ${operand} 2>/dev/null)"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package_release:${operand}"
+        echo -n ${package_release}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    return ${error:-0}
+}
+
+# package version
+function check_package_version() {
+    for operand in $1 ${OPERAND}; do
+        package_version="$(rpm -q ${operand} --queryformat '%{version}' 2>/dev/null)" \
+        || package_version="$(dpkg-query -W -f '${Version}' ${operand} 2>/dev/null)"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} package_version:${operand}"
+        echo -n ${package_version}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${ERR_PACKAGENOTFOUND}
+    return ${error:-0}
+}
+
+# service is running
+function check_pidof() {
+    for operand in $1 ${OPERAND}; do
+        pidof ${operand} >/dev/null 2>&1
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error} && errors="${errors} pidof:${operand}"
+        [ ${operand_error} -ne 0 ] && echo -n ${ERROR} || echo -n ${OK}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${ERR_SERVICENOTRUNNING}
+    return ${error:-0}
+}
+
+# antivirus is installed
+function check_package_antivirus() {
+    check_package ds_agent
+}
+
+# antivirus install date
+function check_package_date_antivirus() {
+    check_package_date ds_agent
+}
+
+# antivirus release
+function check_package_release_antivirus() {
+    check_package_release ds_agent
+}
+
+# antivirus version
+function check_package_version_antivirus() {
+    check_package_version ds_agent
+}
+
+# ds_agent is installed
+function check_package_ds_agent() {
+    check_package ds_agent
+}
+
+# ds_agent install date
+function check_package_date_ds_agent() {
+    check_package_date ds_agent
+}
+
+# ds_agent release
+function check_package_release_ds_agent() {
+    check_package_release ds_agent
+}
+
+# ds_agent version
+function check_package_version_ds_agent() {
+    check_package_version ds_agent
+}
+
+# hardening is installed
+function check_package_hardening() {
+    check_package hardening
+}
+
+# hardening install date
+function check_package_date_hardening() {
+    check_package_date Hardening
+}
+
+# hardening release
+function check_package_release_hardening() {
+    check_package_release Hardening
+}
+
+# hardening version
+function check_package_version_hardening() {
+    check_package_version Hardening
+}
+
+# dovecot is running
+function check_pidof_dovecot() {
+    check_pidof dovecot
+}
+
+# dsmcad is running
+function check_pidof_dsmcad() {
+    check_pidof dsmcad
+}
+
+# haproxy is running
+function check_pidof_haproxy() {
+    check_pidof haproxy
+}
+
+# httpd is running
+function check_pidof_httpd() {
+    check_pidof httpd
+}
+
+# lightbot is running
+function check_pidof_lightbot() {
+    [ -n "$(ps ax |awk '$5 ~ /java/ && $7 == "lightbot.jar" {print $1}')" ]
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error:-0}
+}
+
+# lighttpd is running
+function check_pidof_lighttpd() {
+    check_pidof lighttpd
+}
+
+# mysqld is running
+function check_pidof_mysqld() {
+    check_pidof mysqld
+}
+
+# munin is running
+function check_pidof_munin() {
+    [ -n "$(ps ax |awk '$5 ~ /perl/ && $7 ~ /munin-node/ {print $1}')" ]
+    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
+    return ${error:-0}
 }
 
 # named is running
-function check_named() {
-    pidof named >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
+function check_pidof_named() {
+    check_pidof named
+}
+
+# nfsd is running
+function check_pidof_nfsd() {
+    check_pidof nfsd
+}
+
+# nscd is running
+function check_pidof_nscd() {
+    check_pidof nscd
+}
+
+# openvpn is running
+function check_pidof_openvpn() {
+    check_pidof openvpn
+}
+
+# pdns is running
+function check_pidof_pdns() {
+    check_pidof pdns
 }
 
 # postfix is running
-function check_postfix() {
+function check_pidof_postfix() {
     [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix\/pid\/master.pid/ {print $2}'; done)" ]
     error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
+    return ${error:-0}
 }
 
-# postfix_bp is running
-function check_postfix_bp() {
-    [ -n "$(ps ax |awk '$5 ~ /postfix\/master/ {print $1}' |while read pid; do lsof -p $pid | awk '$9 ~ /var\/spool\/postfix-bp\/pid\/master.pid/ {print $2}'; done)" ]
+# postgrey is running
+function check_pidof_postgrey() {
+    check_pidof postgrey
+}
+
+# proftpd is running
+function check_pidof_proftpd() {
+    check_pidof proftpd
+}
+
+# rsyslogd is running
+function check_pidof_rsyslogd() {
+    check_pidof rsyslogd
+}
+
+# runsvdir is running
+function check_pidof_runsvdir() {
+    check_pidof runsvdir
+}
+
+# slapd is running
+function check_pidof_slapd() {
+    check_pifod slapd
+}
+
+# snmpd is running
+function check_pidof_snmpd() {
+    check_pidof snmpd
+}
+
+# sshd is running
+function check_pidof_sshd() {
+    check_pidof sshd
+}
+
+# sshd_chroot is running
+function check_pidof_sshd_chroot() {
+    [ -n "$(ps ax |awk '$5 ~ /sshd/ && $9 == "/etc/ssh-chroot/sshd_config" {print $1}')" ]
     error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
+    return ${error:-0}
+}
+
+# zabbix_agentd is running
+function check_pidof_zabbix_agentd() {
+    check_pidof zabbix_agentd
+}
+
+# zabbix_server is running
+function check_pidof_zabbix_server() {
+    check_pidof zabbix_server
 }
 
 # processor type
 function check_processor_type() {
     uname -p 2>/dev/null 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
-}
-
-# rsyslogd is running
-function check_rsyslogd() {
-    pidof rsyslogd >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# slapd_alice is running
-function check_slapd_alice() {
-    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /alice/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# slapd_bfbp is running
-function check_slapd_bfbp() {
-    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /bfbp/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# slapd_groupe is running
-function check_slapd_groupe() {
-    [ -n "$(ps ax |awk '$5 ~ /slapd/ && $7 ~ /groupe/ {print $1}')" ]
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# snmpd is running
-function check_snmpd() {
-    pidof snmpd >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
-}
-
-# sshd is running
-function check_sshd() {
-    pidof sshd >/dev/null 2>&1
-    error=$? && [ ${error} -ne 0 ] && error=${ERR_SERVICENOTRUNNING} && echo ${ERROR} || echo ${OK}
-    return ${error}
+    return ${error:-0}
 }
 
 # system install date 
 function check_system_date() {
-    install_date="$(rpm -q basesystem --queryformat '%{installtime}' 2>/dev/null)"
+    install_date="$(rpm -q basesystem --queryformat '%{installtime}' 2>/dev/null)" \
+    || install_date=$(date -d "$(LANG=en_EN ls -alt /var/lib/dpkg/info/*.list 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null) \
+    || install_date=$(date -d "$(LANG=en_EN ls -alt /var/log/installer/ 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null) \
+    || install_date=$(date -d "$(LANG=en_EN ls -alt / 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null)
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    [ ${NUMERIC} ] && echo ${install_date} || date -d @${install_date} +${DATE_FORMAT}
-    return ${error}
+    [ ${NUMERIC} ] && echo ${install_date} || echo $(date -d @${install_date} +${DATE_FORMAT} 2>/dev/null)
+    return ${error:-0}
 }
 
 # number of open files
 function check_system_open_files() {
-    set -o pipefail; cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
+    cat /proc/sys/fs/file-nr 2>/dev/null |awk '{print $1}'
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
 # system release
 function check_system_release() {
-    cat /etc/redhat-release 2>/dev/null || lsb_release -d 2>/dev/null |sed \'s/^Description:[[:blank:]]*//\'
+    lsb_release -d 2>/dev/null |sed 's/^Description:[[:blank:]]*//' \
+    || cat /etc/redhat-release 2>/dev/null \
+    || cat /etc/debian_version 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${ERR_UNDEFINED}
-    return ${error}
+    return ${error:-0}
 }
 
-# #
+# # -a flag
  #
-# listing all tests
+# list all tests
 [ ${LIST} ] && [ ${ALL} ] && \
     echo "Listing tests :" && \
     compgen -A function check_ |sed 's/^check_//' && \
     exit 0
-
-# # parse inputs to determine wich tests will be launched
- #
-# first get list from argv
-LIST="$@"
-# get tests from profiles
-for profile in ${PROFILE}; do
-    # check if profile is defined
-    [ -n "${!profile}" ] && LIST="${LIST} ${!profile}" || [ ${QUIET} ] || echo "WARNING: ${profile} is not a valid profile" >&2
-done
-# if -a flag, select all tests functions
-[ -n "${ALL}" ] && LIST="${LIST} $(compgen -A function check_| sed 's/^check_//')"
-# if no input, fallback to the DEFAULT profile
-[ -n "${LIST}" ] || LIST="${DEFAULT}"
+# select all tests
+[ -n "${ALL}" ] && TESTS="${TESTS} $(compgen -A function check_| sed 's/^check_//')"
 
 # # clean the list
  #
 # remove duplicate tests
-list="$(echo $LIST |xargs -n1 |awk '!t[$0]++' |xargs)"
+list="$(echo $TESTS |xargs -n1 |awk '!t[$0]++' |xargs)"
 # remove invalid tests
 for test in ${list}; do
-    # check if function is defined
-    type check_${test} >/dev/null 2>&1 && tests="${tests} ${test}" || [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
+    # check if test function is defined, or belongs to a defined function
+    type check_${test} >/dev/null 2>&1 \
+    || type check_${test%_*} >/dev/null 2>&1
+    [ $? -eq 0 ] && tests="${tests} ${test}" || [ ${QUIET} ] || echo "WARNING: ${test} is not a valid test" >&2
 done
 
 # check we have valid tests
 [ -z "${tests}" ] && exit=${ERR_TESTNOTFOUND}
 [ ${exit} -ne 0 ] && echo "ERROR: You must specify a valid test to run" >&2 && exit ${exit}
 
-# echo tests list
+# show tests list
 [ ${QUIET} ] || echo "Testing services ${tests/ /} :"
 
 # launch tests
@@ -628,12 +779,25 @@ for test in ${tests}; do
     # echo test
     [ ${QUIET} ] || echo -n "Testing ${test} ... "
     # launch test
-    check_${test}
-    # get error code
-    error=$?
+    type check_${test} >/dev/null 2>&1 && {
+        check_${test}
+        error=$?
+    } || {
+        check_${test%_*} ${test#*_}
+        error=$?
+    }
+    [ ${error} -ne 0 ] && errors="${errors} ${test}"
     # exit code will be the highest error code returned by all the tests
     [ ${error} -gt ${exit} ] && exit=${error}
 done
+
+# if -s flag, show tests in error
+[ ${SUMMARY} ] && exec 1>&3 3>&-
+[ ${SUMMARY} ] && [ ! ${QUIET} ] && echo -n "Tests in error ... "
+[ ${SUMMARY} ] && echo ${errors}
+
+# if -r flag, restart services in error
+[ ${RESTART} ] && [ -x '/usr/local/bin/restart' ] && /usr/local/bin/restart "${errors}"
 
 # exit
 exit ${exit}
