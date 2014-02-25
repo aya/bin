@@ -5,6 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20140210 YA : release candidate 1.0rc2
 # 20140204 YA : release candidate 1.0rc1
 # 20140128 YA : cygwin compatibility, expect and pop command support for ssh connections
 # 20140108 YA : table formated output for account_* checks
@@ -27,7 +28,7 @@
 # TODO: support multiple users for ssh connections
 # TODO: specific tests for smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
 #
-CHECK_RELEASE="1.0rc1"
+CHECK_RELEASE="1.0rc2"
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
 TMP="/tmp"
 
@@ -72,57 +73,39 @@ CHECK_VALID_RESPONSE_CODE_SMTP="200"
 # error code goes through pipes (need bash >= 3)
 [ ${BASH_VERSION:0:1} -ge 3 ] && set -o pipefail
 
-# #
+# # help
  #
-# binaries
-AWK=$(which awk 2>/dev/null)
-CAT=$(which cat 2>/dev/null)
-CUT=$(which cut 2>/dev/null)
-DPKG=$(which dpkg 2>/dev/null)
-HOSTNAME=$(which hostname 2>/dev/null)
-GREP=$(which grep 2>/dev/null)
-LAST=$(which last 2>/dev/null)
-LASTLOG=$(which lastlog 2>/dev/null)
-LSOF=$(which lsof 2>/dev/null)
-PIDOF=$(which pidof 2>/dev/null)
-PING=$(which ping 2>/dev/null)
-PS=$(which ps 2>/dev/null)
-SSH=$(which ssh 2>/dev/null)
-RPM=$(which rpm 2>/dev/null)
-
-# #
- #
-# help
+# function usage: print help message
 function usage() {
 echo "Usage: $0 [options] test [test [...]]
-Test de serveurs linux - v${CHECK_RELEASE}
+Tests de serveurs linux - v${CHECK_RELEASE}
 
 options:
-        -a, --all               lance tous les tests connus
-        -c, --check             ajoute le test en cours dans l'affichage des listes au format tableur
-        -d, --debug             active la mode de deboggage
-        -f, --field             affiche les entetes des colonnes du format tableur (necessite -t)
-        -h, --help              affiche ce message
-        -i, --info              affiche des informations detaillees pour certains tests
-        -l, --list              affiche les jeux de tests de tous les profils
-        -la, --list --all       affiche tous les jeux de tests disponibles
-        -n, --numeric           retourne uniquement des valeurs numeriques
-        -p, --pop               utilise la commande pop pour obtenir une liste de serveurs distants
-        -q, --quiet             active le mode silencieux
-        -r, --return-char       affiche les resultats sur une ligne separes par un retour chariot
-        -s, --summary           affiche la liste des tests en erreur
-        -t, --table             affiche les listes au format tableur
-        -u, --update            force la mise a jour des fichiers de profiles et de fonctions
-        -v, --version           affiche la version
-        -w, --password          demande un mot de passe pour se connecter aux serveurs distants
-        -H, --host=<host>       lance les tests sur le <host> distant
-        -O, --operand=<operand> passe un argument <operand> a tous les tests
-        -P, --profile=<profil>  utilise le jeu de test defini pour le <profil>
-            --prefix=<prefix>   utilise le <prefix> dans l'affichage des listes au format tableur
-            --no-prefix         affiche les listes au format tableur sans prefixe
-            --prefix=<prefix>%prefix%    ajoute le <prefix> au %prefix% existant
-        -U, --user=<user>       se connecte aux serveurs distants avec l'utilisateur <user>
-        -W, --password=<passwd> se connecte aux serveurs distants avec le mot de passe <passwd>
+    -a, --all               lance tous les tests connus
+    -c, --check             ajoute le test en cours dans le prefixe des listes au format tableur
+    -d, --debug             active la mode de deboggage
+    -f, --field             affiche les entetes des colonnes du format tableur (necessite -t)
+    -h, --help              affiche ce message
+    -i, --info              affiche des informations detaillees pour certains tests
+    -l, --list              affiche les jeux de tests de tous les profils
+    -la, --list --all       affiche tous les jeux de tests disponibles
+    -n, --numeric           retourne uniquement des valeurs numeriques
+    -p, --pop               utilise la commande pop pour obtenir une liste de serveurs distants
+    -q, --quiet             active le mode silencieux
+    -r, --return-char       affiche les resultats sur une ligne separes par un retour chariot
+    -s, --summary           affiche la liste des tests en erreur
+    -t, --table             affiche les listes au format tableur
+    -u, --update            force la mise a jour des fichiers de profiles et de fonctions
+    -v, --version           affiche la version
+    -w, --password          demande un mot de passe pour se connecter aux serveurs distants
+    -H, --host=<host>       lance les tests sur le <host> distant
+    -O, --operand=<operand> passe un argument <operand> a tous les tests
+    -P, --profile=<profil>  utilise le jeu de test defini pour le <profil>
+        --prefix=<prefix>   utilise le <prefix> dans l'affichage des listes au format tableur
+        --no-prefix         affiche les listes au format tableur sans prefixe
+        --prefix=<prefix>%prefix%    ajoute le <prefix> au %prefix% existant
+    -U, --user=<user>       se connecte aux serveurs distants avec l'utilisateur <user>
+    -W, --password=<passwd> se connecte aux serveurs distants avec le mot de passe <passwd>
 "
 }
 
@@ -174,7 +157,7 @@ while getopts "acdfhilnpqrstuvwH:O:P:U:W:-:" Option; do
                     CHECK_POP=1
                     ;;
                 password)
-                    CHECK_PASSWORD=1
+                    CHECK_PASSWORD=$((${CHECK_PASSWORD:-0} + 1))
                     ;;
                 password=*)
                     PASSWORDS="${PASSWORDS} ${OPTARG#*=}"
@@ -252,7 +235,7 @@ while getopts "acdfhilnpqrstuvwH:O:P:U:W:-:" Option; do
         n)
             CHECK_NUMERIC=1
             ;;
-        o)
+        O)
             CHECK_OPERAND="${CHECK_OPERAND} ${OPTARG}"
             ;;
         p)
@@ -277,7 +260,7 @@ while getopts "acdfhilnpqrstuvwH:O:P:U:W:-:" Option; do
             CHECK_UPDATE=$((${CHECK_UPDATE:-0} + 1))
             ;;
         w)
-            CHECK_PASSWORD=1
+            CHECK_PASSWORD=$((${CHECK_PASSWORD:-0} + 1))
             ;;
         U)
             CHECK_USER="${CHECK_USER} ${OPTARG}"
@@ -296,25 +279,27 @@ while getopts "acdfhilnpqrstuvwH:O:P:U:W:-:" Option; do
 done
 shift $(($OPTIND - 1))
 
-# # OS specific
+# #
  #
-# check binaries
-case "${check_os}" in
-    GNU/Linux)
-        [ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${LAST}" ] ||[ -z "${LASTLOG}" ] ||  [ -z "${LSOF}" ] || [ -z "${PIDOF}" ] || [ -z "${PS}" ] || [ -z "${RPM}" -a -z "${DPKG}" ] && exit=${CHECK_ERROR_NOT_FOUND_BINARY}
-        [ -n "${CHECK_HOST}" ] && [ -z "${PING}" -o -z "${SSH}" ] && exit=${CHECK_ERROR_NOT_FOUND_BINARY}
-        [ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
-        ;;
-    Cygwin)
-        [ -z "${AWK}" ] || [ -z "${CAT}" ] || [ -z "${CUT}" ] || [ -z "${HOSTNAME}" ] || [ -z "${GREP}" ] || [ -z "${PS}" ] && exit=${CHECK_ERROR_NOT_FOUND_BINARY}
-        [ -n "${CHECK_HOST}" ] && [ -z "${PING}" -o -z "${SSH}" ] && exit=${CHECK_ERROR_NOT_FOUND_BINARY}
-        [ ${exit} -ne 0 ] && echo "ERROR: Unable to find all needed binaries" >&2 && exit $exit
-        ;;
-    *)
-        [ ${CHECK_QUIET} ] || echo "WARNING: This script has not been tested under your current operating system, use at your own risk !" >&2
-        ;;
-esac
+# function check: used in several functions, exit if binary not found
+function check() {
+    # on verifie si le binaire est accessible dans $PATH
+    for operand in $@; do
+        which ${operand} >/dev/null 2>&1
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        [ ${error:-0} -ne 0 ] && echo "ERROR: Unable to find binary ${operand}" >&2 && break
+    done
+    [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_NOT_FOUND_BINARY}
+    return ${error:-0}
+}
 
+# #
+ #
+# check needed binaries
+check awk sed grep cat cut ls date id xargs || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
+if [ -n "${CHECK_HOST}" ]; then
+    check ping ssh || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
+fi
 
 # #
  #
@@ -378,9 +363,9 @@ CHECK_TABLE_FIELD_LOGIN_SERVICES="\"${CHECK_FIELD_LOGIN_SERVICES}\";"
 # on prepare le separateur de champ, pour afficher les elements sur une seule ligne ou un element par ligne
 [ ${CHECK_RETURN} ] || [ ${CHECK_TABLE} ] && CHECK_SEPARATOR=${CHECK_RETURN_CHAR} || CHECK_SEPARATOR=" "
 
-
 # update profiles and functions from remote host
 [ ${CHECK_UPDATE:-0} -ge 1 ] && {
+    check wget || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
     # get profiles from remote file
     wget ${CHECK_WGET_OPTION} "${CHECK_URL}_profile" -O "${TMP}/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${CHECK_URL}_profile" >&2
     # if file is not empty, overwrite local file
@@ -478,6 +463,7 @@ function check_account_active() {
 
 # account lastlog
 function check_account_lastlog() {
+    check lastlog || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # on affiche un retour chariot selon les options
     [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
     # on recupere le prefixe de l'affichage des entetes au format tableur
@@ -514,6 +500,7 @@ function check_account_lastlog() {
 
 # account last logged in users
 function check_account_login() {
+    check last || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # on affiche un retour chariot selon les options
     [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
     # on recupere le prefixe de l'affichage des entetes au format tableur
@@ -551,11 +538,13 @@ function check_account_login() {
 }
 
 function check_all_account_list() {
+    check getent || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     ALL=1 check_account_list $@
 }
 
 # account list
 function check_account_list() {
+    check lastlog ps || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # on affiche un retour chariot selon les options
     [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
     # on recupere le prefixe de l'affichage des entetes au format tableur
@@ -663,6 +652,7 @@ function check_account_list() {
 
 # account logged in
 function check_account_logged_in() {
+    check ps || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # on affiche un retour chariot selon les options
     [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
     # on recupere le prefixe de l'affichage des entetes au format tableur
@@ -746,6 +736,7 @@ function check_account_with_privilege() {
 
 # account with process
 function check_account_with_process() {
+    check ps || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # on affiche un retour chariot selon les options
     [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
     # on recupere le prefixe de l'affichage des entetes au format tableur
@@ -829,8 +820,23 @@ function check_account_without_password() {
     return ${error:-0}
 }
 
+# check binary
+function check_binary() {
+    # on verifie si le binaire est accessible dans $PATH
+    for operand in $@ ${CHECK_OPERAND}; do
+        which ${operand} >/dev/null 2>&1
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        [ ${operand_error} -ne 0 ] && echo -n ${CHECK_ERROR} || echo -n ${CHECK_OK}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_NOT_FOUND_BINARY}
+    return ${error:-0}
+}
+
 # disk I/O statistics
 function check_disk_stat() {
+    check stat || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # from http://exchange.nagios.org/directory/Plugins/System-Metrics/Storage-Subsystem/check_diskstat/details
     for disk in $@; do
         WARNING="500,25000,25000"
@@ -1018,6 +1024,7 @@ function check_disk_stats() {
 
 # hardware type
 function check_hardware_type() {
+    check uname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     uname -i 2>/dev/null || uname -m 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     return ${error:-0}
@@ -1025,6 +1032,7 @@ function check_hardware_type() {
 
 # hostname
 function check_hostname() {
+    check hostname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # fails on centos
     # hostname -s 2>/dev/null
     hostname 2>/dev/null |sed 's/\..*//'
@@ -1034,6 +1042,7 @@ function check_hostname() {
 
 # ifconfig
 function check_ip_addresses() {
+    check ifconfig || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     addresses="$(ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/')"
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     echo ${addresses}
@@ -1042,6 +1051,7 @@ function check_ip_addresses() {
 
 # ifconfig eth0
 function check_ip_address() {
+    check ifconfig || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     for operand in $@ ${CHECK_OPERAND}; do
         case "${operand}" in
             *.*.*.*)
@@ -1064,6 +1074,7 @@ function check_ip_address() {
 
 # kernel date
 function check_kernel_date() {
+    check uname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     kernel_date="$(uname -v 2>/dev/null |awk '{$1=$2=""; print}')"
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     [ ${CHECK_NUMERIC} ] && echo $(date -d "${kernel_date}" +%s 2>/dev/null) || echo $(date -d "${kernel_date}" +${CHECK_DATE_FORMAT} 2>/dev/null)
@@ -1072,6 +1083,7 @@ function check_kernel_date() {
 
 # kernel release
 function check_kernel_release() {
+    check uname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     uname -r 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     return ${error:-0}
@@ -1079,6 +1091,7 @@ function check_kernel_release() {
 
 # kernel version
 function check_kernel_version() {
+    check uname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     uname -v 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     return ${error:-0}
@@ -1086,6 +1099,7 @@ function check_kernel_version() {
 
 # last boot time
 function check_last_reboot() {
+    check last || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     last_reboot="$(last reboot 2>/dev/null |head -1 |awk '{print $5" "$6" "$7" "$8}')"
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     [ ${CHECK_NUMERIC} ] && echo $(date -d "${last_reboot}" +%s 2>/dev/null) || echo $(date -d "${last_reboot}" +${CHECK_DATE_FORMAT} 2>/dev/null)
@@ -1094,6 +1108,7 @@ function check_last_reboot() {
 
 # number of files, unique files, threads and sockets opened by a process
 function check_open_files() {
+    check pidof || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     for operand in $@ ${CHECK_OPERAND}; do
         open_files=$(for pid in $(/sbin/pidof ${operand} 2>/dev/null); do ls -l /proc/${pid}/fd 2>/dev/null |sed 1d; done |wc -l)
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -1110,6 +1125,7 @@ function check_open_files() {
 
 # package is installed
 function check_package() {
+    check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     for operand in $@ ${CHECK_OPERAND}; do
         rpm -q ${operand} >/dev/null 2>&1 \
         || dpkg -s ${operand} >/dev/null 2>&1
@@ -1124,6 +1140,7 @@ function check_package() {
 
 # package install date
 function check_package_date() {
+    check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     for operand in $@ ${CHECK_OPERAND}; do
         package_date="$(rpm -q ${operand} --queryformat '%{installtime}' 2>/dev/null)" \
         || package_date="$(date -r /var/lib/dpkg/info/${operand}.list +%s 2>/dev/null)"
@@ -1138,6 +1155,7 @@ function check_package_date() {
 
 # package release
 function check_package_release() {
+    check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     for operand in $@ ${CHECK_OPERAND}; do
         package_release="$(rpm -q ${operand} --queryformat '%{release}' 2>/dev/null)" \
         || package_release="$(dpkg-query -W -f '${Revision}' ${operand} 2>/dev/null)"
@@ -1152,6 +1170,7 @@ function check_package_release() {
 
 # package version
 function check_package_version() {
+    check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     for operand in $@ ${CHECK_OPERAND}; do
         package_version="$(rpm -q ${operand} --queryformat '%{version}' 2>/dev/null)" \
         || package_version="$(dpkg-query -W -f '${Version}' ${operand} 2>/dev/null)"
@@ -1166,6 +1185,7 @@ function check_package_version() {
 
 # service is running
 function check_pidof() {
+    check ps pidof lsof
     for operand in $@ ${CHECK_OPERAND}; do
         # search with pidof, ps, or lsof 
         # $operand looks like : process_to_search:type_of_search:column_to_search:word_to_search
@@ -1206,6 +1226,7 @@ function check_pidof() {
 
 # processor type
 function check_processor_type() {
+    check uname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     uname -p 2>/dev/null 2>/dev/null
     error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
     return ${error:-0}
@@ -1213,6 +1234,7 @@ function check_processor_type() {
 
 # system install date 
 function check_system_date() {
+    check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     install_date="$(rpm -q basesystem --queryformat '%{installtime}' 2>/dev/null)" \
     || install_date=$(date -d "$(LANG=en_EN ls -alt /var/lib/dpkg/info/*.list 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null) \
     || install_date=$(date -d "$(LANG=en_EN ls -alt /var/log/installer/ 2>/dev/null |tail -1 |awk '{print $6" "$7" "$8}')" +%s 2>/dev/null) \
@@ -1533,7 +1555,7 @@ function check_version() {
 # lock to prevent other process running
 LOCK="${TMP}/.lock-${0##*/}"
 set -o noclobber
-(echo "$$" > $LOCK) 2>/dev/null && trap "rm ${LOCK}; exit" INT TERM || error=${CHECK_ERROR_LOCKED}
+(echo "$$" > $LOCK) 2>/dev/null && trap "rm ${LOCK}; exit" HUP INT TERM || error=${CHECK_ERROR_LOCKED}
 set +o noclobber
 [ ${error:-0} -ne 0 ] && exit=${error} && echo "ERROR : $(basename $0) is LOCKED on ${HOSTNAME}. Please remove ${LOCK}" && exit ${exit}
 
@@ -1636,7 +1658,10 @@ type pop >/dev/null 2>&1 || function pop {
 }
 
 [ ${CHECK_POP} ] && CHECK_HOST="${CHECK_HOST} $(pop -R)"
-[ ${CHECK_PASSWORD} ] && [ -n "${CHECK_HOST}" ] && echo -n "Password: " && read -s password && echo && [ -n "${password}" ] && PASSWORDS="${password} ${PASSWORDS}"
+[ -n "${CHECK_HOST}" ] && [ ${CHECK_PASSWORD} ] && while [ ${CHECK_PASSWORD} -ne 0 ]; do
+    echo -n "Password: " && read -s password && echo && [ -n "${password}" ] && PASSWORDS="${PASSWORDS} ${password}"
+    CHECK_PASSWORD=$((${CHECK_PASSWORD} - 1))
+done
 
 # launch remote tests
 for host in ${CHECK_HOST}; do
@@ -1678,8 +1703,8 @@ for host in ${CHECK_HOST}; do
         set ${PASSWORDS}
         PASSWORD_COUNT=$#
         expect <<- EOE
-set timeout 7
-match_max 1048576
+set timeout 32
+#match_max 1048576
 set index 0
 foreach pass {$PASSWORDS} {
     set password(\$index) \$pass
@@ -1706,7 +1731,7 @@ EOE
 done
 
 # unlock
-rm -f "${LOCK}" 2>/dev/null && trap - INT TERM
+rm -f "${LOCK}" 2>/dev/null && trap - HUP INT TERM
 
 # exit
 exit ${exit}
