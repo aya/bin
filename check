@@ -5,6 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
+# 20140218 YA : release candidate 1.0rc3
 # 20140210 YA : release candidate 1.0rc2
 # 20140204 YA : release candidate 1.0rc1
 # 20140128 YA : cygwin compatibility, expect and pop command support for ssh connections
@@ -25,12 +26,23 @@
 # 20130814 YA : check open files for DB2, numeric output for supervision
 # 20130731 YA : first version for redhat, check few services
 #
+# BUG: check profiles should work with remote tests
+# BUG: check if binary exists on remote tests should not exit with error (check -H IVLRHS01 disk_stats)
+# BUG: check http should accept multiple port/url in operand
+# TODO: check ssh authorized_keys
+# TODO: check redhat subscription
+# TODO: support json output (-j)
+# TODO: support munin output (-m)
+# TODO: support nagios output (-n, numeric => integer, info => extended)
+#       ou alors output (text,integer,nagios,munin,json)
+#       http://nagios.manubulon.com/traduction/wiki_preview/perfdata.html
+#       https://blog.centreon.com/bonnes-pratiques-comment-developper-les-plugin-nagios/?lang=fr
 # TODO: support multiple users for ssh connections
 # TODO: specific tests for smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
 #
-CHECK_RELEASE="1.0rc2"
+CHECK_RELEASE="1.0rc3"
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
-TMP="/tmp"
+CHECK_TMP="/tmp"
 
 # #
  #
@@ -367,13 +379,13 @@ CHECK_TABLE_FIELD_LOGIN_SERVICES="\"${CHECK_FIELD_LOGIN_SERVICES}\";"
 [ ${CHECK_UPDATE:-0} -ge 1 ] && {
     check wget || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
     # get profiles from remote file
-    wget ${CHECK_WGET_OPTION} "${CHECK_URL}_profile" -O "${TMP}/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${CHECK_URL}_profile" >&2
+    wget ${CHECK_WGET_OPTION} "${CHECK_URL}_profile" -O "${CHECK_TMP}/.$(basename $0)_profile.$$" 2>/dev/null || echo "WARNING: Unable to wget ${CHECK_URL}_profile" >&2
     # if file is not empty, overwrite local file
-    [ -s "${TMP}/.$(basename $0)_profile.$$" ] && mv "${TMP}/.$(basename $0)_profile.$$" $0_profile && chmod +r $0_profile || error=${CHECK_ERROR_UPGRADE_FAILED}
+    [ -s "${CHECK_TMP}/.$(basename $0)_profile.$$" ] && mv "${CHECK_TMP}/.$(basename $0)_profile.$$" $0_profile && chmod +r $0_profile || error=${CHECK_ERROR_UPGRADE_FAILED}
     # get functions from remote file
-    wget ${CHECK_WGET_OPTION} "${CHECK_URL}_function" -O "${TMP}/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${CHECK_URL}_function" >&2
+    wget ${CHECK_WGET_OPTION} "${CHECK_URL}_function" -O "${CHECK_TMP}/.$(basename $0)_function.$$" 2>/dev/null || echo "WARNING: Unable to wget ${CHECK_URL}_function" >&2
     # if file is not empty, overwrite local file
-    [ -s "${TMP}/.$(basename $0)_function.$$" ] && mv "${TMP}/.$(basename $0)_function.$$" $0_function && chmod +r $0_function || error=${CHECK_ERROR_UPGRADE_FAILED}
+    [ -s "${CHECK_TMP}/.$(basename $0)_function.$$" ] && mv "${CHECK_TMP}/.$(basename $0)_function.$$" $0_function && chmod +r $0_function || error=${CHECK_ERROR_UPGRADE_FAILED}
     # exit if upgrade failed
     [ ${error:-0} -ne 0 ] && echo "ERROR: Upgrade failed !" >&2 && exit ${error} || [ ${CHECK_QUIET} ] || echo "INFO: Upgrade successful"
 }
@@ -382,11 +394,11 @@ CHECK_TABLE_FIELD_LOGIN_SERVICES="\"${CHECK_FIELD_LOGIN_SERVICES}\";"
 [ ${CHECK_UPDATE:-0} -gt 1 ] && {
     [ ! ${CHECK_QUIET} ] && echo -n "Do you really want to upgrade this script ? [y/N] : " && read UPGRADE
     [ ${CHECK_QUIET:-0} -ne 0 -o "${UPGRADE:0:1}" = "Y" -o "${UPGRADE:0:1}" = "y" ] && {
-        wget ${CHECK_WGET_OPTION} "${CHECK_URL}" -O "${TMP}/.$(basename $0).$$" 2>/dev/null || error=${CHECK_ERROR_UPGRADE_FAILED}
+        wget ${CHECK_WGET_OPTION} "${CHECK_URL}" -O "${CHECK_TMP}/.$(basename $0).$$" 2>/dev/null || error=${CHECK_ERROR_UPGRADE_FAILED}
         [ ${error:-0} -ne 0 ] && echo "WARNING: Unable to wget ${CHECK_URL}" >&2 && exit ${error:-0}
-        [ ! ${CHECK_QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' ${TMP}/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${CHECK_RELEASE}, continue ? [y/N] : " && read UPGRADE_SCRIPT
+        [ ! ${CHECK_QUIET} ] && NEW_RELEASE=$(awk 'BEGIN {FS="="} $1 == "RELEASE" {print $2}' ${CHECK_TMP}/.$(basename $0).$$ |sed 's/"//g') && echo -n "Downloaded version : ${NEW_RELEASE}, Current version : ${CHECK_RELEASE}, continue ? [y/N] : " && read UPGRADE_SCRIPT
         [ ${CHECK_QUIET:-0} -ne 0 -o "${UPGRADE_SCRIPT:0:1}" = "Y" -o "${UPGRADE_SCRIPT:0:1}" = "y" ] && {
-            [ -s "${TMP}/.$(basename $0).$$" ] && mv "${TMP}/.$(basename $0).$$" $0 && chmod +x $0 || error=${CHECK_ERROR_UPGRADE_FAILED}
+            [ -s "${CHECK_TMP}/.$(basename $0).$$" ] && mv "${CHECK_TMP}/.$(basename $0).$$" $0 && chmod +x $0 || error=${CHECK_ERROR_UPGRADE_FAILED}
             [ ${error:-0} -ne 0 ] && echo "ERROR: Auto upgrade failed !" >&2 || [ ${CHECK_QUIET} ] || echo "INFO: Auto upgrade successful"
         }
     }
@@ -823,7 +835,7 @@ function check_account_without_password() {
 # check binary
 function check_binary() {
     # on verifie si le binaire est accessible dans $PATH
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         which ${operand} >/dev/null 2>&1
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         [ ${operand_error} -ne 0 ] && echo -n ${CHECK_ERROR} || echo -n ${CHECK_OK}
@@ -836,6 +848,8 @@ function check_binary() {
 
 # disk I/O statistics
 function check_disk_stat() {
+#set -x
+#PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
     check stat || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # from http://exchange.nagios.org/directory/Plugins/System-Metrics/Storage-Subsystem/check_diskstat/details
     for disk in $@; do
@@ -848,7 +862,7 @@ function check_disk_stat() {
         E_UNKNOWN=3
 
         # generate HISTFILE filename
-        HISTFILE=${TMP}/.check-${USER}-disk_stat.${disk}
+        HISTFILE=${CHECK_TMP}/.check-${USER}-disk_stat.${disk}
 
         # process thresholds
         WARN_TPS=$(echo $WARNING | cut -d , -f 1)
@@ -871,7 +885,7 @@ function check_disk_stat() {
             return $E_UNKNOWN
         fi
 
-        NEWDISKSTAT=$(cat /sys/block/$disk/stat)
+        NEWDISKSTAT=$(cat /sys/block/$disk/stat 2>/dev/null)
 
 
         if [ ! -f $HISTFILE ]; then
@@ -887,9 +901,9 @@ function check_disk_stat() {
             return $E_UNKNOWN
         fi
 
-        OLDDISKSTAT_TIME=$(stat $HISTFILE | grep Modify | sed 's/^.*: \(.*\)$/\1/')
-        OLDDISKSTAT_EPOCH=$(date -d "$OLDDISKSTAT_TIME" +%s)
-        NEWDISKSTAT_EPOCH=$(date +%s)
+        OLDDISKSTAT_TIME=$(stat $HISTFILE 2>/dev/null | grep Modify | sed 's/^.*: \(.*\)$/\1/')
+        OLDDISKSTAT_EPOCH=$(date -d "$OLDDISKSTAT_TIME" +%s 2>/dev/null)
+        NEWDISKSTAT_EPOCH=$(date +%s 2>/dev/null)
 
         echo $NEWDISKSTAT >$HISTFILE
         # now we have old and current stat; 
@@ -965,7 +979,7 @@ function check_disk_stat() {
 # disk I/O statistics
 function check_disk_io() {
     [ "${CHECK_QUIET}" ] || echo
-    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
     for dev in ${devs}; do
         if [ -e /sys/block/${dev}/dev ]; then
             [ "${CHECK_QUIET}" ] || echo -n "${dev}: "
@@ -980,7 +994,7 @@ function check_disk_io() {
 # disk read statistics
 function check_disk_read() {
     [ "${CHECK_QUIET}" ] || echo
-    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
     for dev in ${devs}; do
         if [ -e /sys/block/${dev}/dev ]; then
             [ "${CHECK_QUIET}" ] || echo -n "${dev}: "
@@ -995,7 +1009,7 @@ function check_disk_read() {
 # disk write statistics
 function check_disk_write() {
     [ "${CHECK_QUIET}" ] || echo
-    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
     for dev in ${devs}; do
         if [ -e /sys/block/${dev}/dev ]; then
             [ "${CHECK_QUIET}" ] || echo -n "${dev}: "
@@ -1009,8 +1023,9 @@ function check_disk_write() {
 
 # disk statistics
 function check_disk_stats() {
+    check stat || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     [ "${CHECK_QUIET}" ] || echo
-    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block)"
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
     for dev in ${devs}; do
         if [ -e /sys/block/${dev}/dev ]; then
             echo -n "${dev}: "
@@ -1052,7 +1067,7 @@ function check_ip_addresses() {
 # ifconfig eth0
 function check_ip_address() {
     check ifconfig || return ${CHECK_ERROR_NOT_FOUND_BINARY}
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         case "${operand}" in
             *.*.*.*)
                 ifconfig 2>/dev/null |awk '/inet adr/ {print $2}' |sed 's/adr:\([0-9.]\)/\1/' |grep "${operand}" >/dev/null
@@ -1109,13 +1124,13 @@ function check_last_reboot() {
 # number of files, unique files, threads and sockets opened by a process
 function check_open_files() {
     check pidof || return ${CHECK_ERROR_NOT_FOUND_BINARY}
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         open_files=$(for pid in $(/sbin/pidof ${operand} 2>/dev/null); do ls -l /proc/${pid}/fd 2>/dev/null |sed 1d; done |wc -l)
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
         [ -n "${open_files}" ] && echo -n "${open_files} "
     done
     echo
-    [ ${CHECK_INFO} ] && for operand in $@ ${CHECK_OPERAND}; do
+    [ ${CHECK_INFO} ] && for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         pidof ${operand} >/dev/null 2>&1 && echo && ps -eLf |awk 'BEGIN {totalfiles=0; totalufiles=0; totalthreads=0; totalsockets=0} $10 ~ /'${operand}'/ {user[$2]=$1; date[$2]=$7; thread[$2]+=1} END { for (pid in user) {files="ls -l /proc/"pid"/fd 2>/dev/null |sed 1d |wc -l"; files |getline openfiles[pid]; ufiles="ls -l /proc/"pid"/fd 2>/dev/null |sed 1d |cut -d\" \" -f 11 |grep -vE \"(socket)\" |sort -u |wc -l"; ufiles |getline uniquefiles[pid]; sockets="ls -l /proc/"pid"/fd 2>/dev/null |cut -d\" \" -f 11 |grep -E \"(socket)\" |sort -u |wc -l"; sockets |getline opensockets[pid]; totalopenfiles+=openfiles[pid]; totaluniquefiles+=uniquefiles[pid]; totalthreads+=thread[pid]; totalopensockets+=opensockets[pid]; print "user: "user[pid]", pid: "pid", date: "date[pid]", fichiers: "openfiles[pid]", uniques: "uniquefiles[pid]", threads: "thread[pid]", sockets: "opensockets[pid]}; print "TOTAL '${operand}' ... fichiers: "totalopenfiles", uniques: "totaluniquefiles", threads: "totalthreads", sockets: "totalopensockets}' 
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
     done
@@ -1126,7 +1141,7 @@ function check_open_files() {
 # package is installed
 function check_package() {
     check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         rpm -q ${operand} >/dev/null 2>&1 \
         || dpkg -s ${operand} >/dev/null 2>&1
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -1141,7 +1156,7 @@ function check_package() {
 # package install date
 function check_package_date() {
     check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         package_date="$(rpm -q ${operand} --queryformat '%{installtime}' 2>/dev/null)" \
         || package_date="$(date -r /var/lib/dpkg/info/${operand}.list +%s 2>/dev/null)"
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -1156,7 +1171,7 @@ function check_package_date() {
 # package release
 function check_package_release() {
     check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         package_release="$(rpm -q ${operand} --queryformat '%{release}' 2>/dev/null)" \
         || package_release="$(dpkg-query -W -f '${Revision}' ${operand} 2>/dev/null)"
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -1171,7 +1186,7 @@ function check_package_release() {
 # package version
 function check_package_version() {
     check rpm || check dpkg || return ${CHECK_ERROR_NOT_FOUND_BINARY}
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         package_version="$(rpm -q ${operand} --queryformat '%{version}' 2>/dev/null)" \
         || package_version="$(dpkg-query -W -f '${Version}' ${operand} 2>/dev/null)"
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -1186,7 +1201,7 @@ function check_package_version() {
 # service is running
 function check_pidof() {
     check ps pidof lsof
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         # search with pidof, ps, or lsof 
         # $operand looks like : process_to_search:type_of_search:column_to_search:word_to_search
         input=($(echo $operand |awk 'BEGIN{FS=":"} {print $1" "$2" "$3" "$4}'))
@@ -1302,7 +1317,7 @@ function check_tls() {
 
 # tcp connection
 function check_tcp() {
-    for operand in $@ ${CHECK_OPERAND}; do
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
         case "${operand}" in
             *:*)
                 host=${operand%%:*}
@@ -1319,7 +1334,7 @@ function check_tcp() {
         [ ${SSL} ] && which openssl >/dev/null 2>&1 && check_tcp_command="${TIMEOUT:-} openssl s_client -connect ${host:-127.0.0.1}:${port} ${tls:-} ${starttls:-} </dev/null 2>&1 |grep CERTIFICATE"
         [ -z "${check_tcp_command}" ] && error=${CHECK_ERROR_NOT_FOUND_BINARY} && echo -n ${CHECK_ERROR} && continue
         sh -c "${check_tcp_command}" >/dev/null 2>&1
-        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${CHECK_ERROR_CONNECTION_FAILED_TCP}
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${CHECK_ERROR_CONNECTION_FAILED}
         [ ${operand_error} -ne 0 ] && echo -n ${CHECK_ERROR} || echo -n ${CHECK_OK}
         echo -n " "
     done
@@ -1339,6 +1354,8 @@ function check_https() {
 
 # http connection
 function check_http() {
+    # TODO: accept multiple port/url in operand
+    # for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
     for operand in ${@:-127.0.0.1} ${CHECK_OPERAND}; do
         hostname=""; addr=""; host=""; port=""; url=""; pattern=""
         # extract hostname, port, url, and pattern from the operand
@@ -1359,11 +1376,20 @@ function check_http() {
                         ;;
                     # user:pass@host/url~pattern == hostname/url~pattern
                     *:*@*)
-                        hostname=${operand%/*}
+                        hostname=${operand%%/*}
                         url_pattern=${operand#*/}
                         url="/${url_pattern%%~*}"
                         pattern=${operand##*~}
                         [ ${SSL} ] && port=443 || port=80
+                        ;;
+                    # host:port/url~pattern == hostname:port/url~pattern
+                    *:*)
+                        hostname=${operand%:*}
+                        port_url_pattern=${operand##*:}
+                        port=${port_url_pattern%%/*}
+                        url_pattern=${port_url_pattern#*/}
+                        url="/${url_pattern%%~*}"
+                        pattern=${operand##*~}
                         ;;
                 esac
                 ;;
@@ -1384,6 +1410,13 @@ function check_http() {
                         url="/${operand#*/}"
                         [ ${SSL} ] && port=443 || port=80
                         ;;
+                    # host:port/url == hostname:port/url
+                    *:*)
+                        hostname=${operand%:*}
+                        port_url=${operand##*:}
+                        port=${port_url%%/*}
+                        url="/${port_url#*/}"
+                        ;;
                 esac
                 ;;
             # hostname:port~pattern
@@ -1401,6 +1434,13 @@ function check_http() {
                     *:*@*)
                         hostname=${operand%%~*}
                         pattern=${operand##*~}
+                        ;;
+                    # host:port~pattern == hostname:port~pattern
+                    *:*)
+                        hostname=${operand%:*}
+                        port_pattern=${operand##*:}
+                        port="${port_pattern%%~*}"
+                        pattern=${port_pattern##*~}
                         ;;
                 esac
                 ;;
@@ -1438,6 +1478,11 @@ function check_http() {
                         hostname=${operand}
                         [ ${SSL} ] && port=443 || port=80
                         ;;
+                    # host:port == hostname:port
+                    *:*)
+                        hostname=${operand%:*}
+                        port=${operand##*:}
+                        ;;
                 esac
                 ;;
             # hostname
@@ -1446,6 +1491,18 @@ function check_http() {
                 [ ${SSL} ] && port=443 || port=80
                 ;;
         esac
+
+# echo
+# echo "operand: "${operand}
+# echo "hostname: "$hostname
+# echo "user: "$user
+# echo "pass: "$pass
+# echo "host: "$host
+# echo "addr: "$addr
+# echo "port: "$port
+# echo "url: "$url
+# echo "pattern: "$pattern
+
         # check the hostname to get the user, pass, host, and addr
         case "${hostname}" in
             # user:pass@host#addr
@@ -1488,6 +1545,7 @@ function check_http() {
         esac
         [ -z "${addr}" ] && addr="${host}"
 
+# echo
 # echo "operand: "${operand}
 # echo "hostname: "$hostname
 # echo "user: "$user
@@ -1513,7 +1571,7 @@ function check_http() {
                         # we are in a subshell, so we have to return a specific code (42) to tell that we found the pattern
                         [ ${check_http_return_code:-0} -eq ${valid_code} ] && return 42
                     done
-                    return ${CHECK_ERROR_RESPONSE_CODE_HTTP}
+                    return ${CHECK_ERROR_RESPONSE_CODE}
                     ;;
             esac
             # echo line $cpt: $line
@@ -1522,9 +1580,9 @@ function check_http() {
         # if subshell returned 42, then pattern has been found
         operand_error=$? && [ ${operand_error} -ne 42 ] && error=${operand_error} && echo -n ${CHECK_ERROR} || echo -n ${CHECK_OK}
         # if subshell returned 0, then pattern has not been found
-        [ ${operand_error} -eq 0 ] && error=${CHECK_ERROR_NOT_FOUND_HTTP_PATTERN}
+        [ ${operand_error} -eq 0 ] && error=${CHECK_ERROR_NOT_FOUND_PATTERN}
         # if subshell returned 1, then tcp connection has failed
-        [ ${operand_error} -eq 1 ] && error=${CHECK_ERROR_CONNECTION_FAILED_TCP}
+        [ ${operand_error} -eq 1 ] && error=${CHECK_ERROR_CONNECTION_FAILED}
         echo -n " "
     done
     echo
@@ -1553,7 +1611,7 @@ function check_version() {
 # #
  #
 # lock to prevent other process running
-LOCK="${TMP}/.lock-${0##*/}"
+LOCK="${CHECK_TMP}/.lock-${0##*/}"
 set -o noclobber
 (echo "$$" > $LOCK) 2>/dev/null && trap "rm ${LOCK}; exit" HUP INT TERM || error=${CHECK_ERROR_LOCKED}
 set +o noclobber
@@ -1630,14 +1688,14 @@ for test in ${tests}; do
         # prepare test list
         CHECK_TESTS="${CHECK_TESTS} $test"
         CHECK_FUNCTIONS[$i]="${check_function}"
-        CHECK_OPERANDS[$i]="${check_operand//,/ }"
+        CHECK_OPERANDS[$i]="${check_operand}"
         i=$((i+1))
     # or launch local tests
     else
         # echo test
         [ ${CHECK_QUIET} ] || echo -n "Testing ${test} ... "
         # launch check_the_function_name, or check_the_function name, or check_the function_name
-        ${check_function} "${check_operand//,/ }"
+        ${check_function} "${check_operand}"
         error=$? && [ ${error} -ne 0 ] && errors="${errors} ${test}"
     fi
     # exit code will be the highest error code returned by all the tests
