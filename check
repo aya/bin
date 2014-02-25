@@ -5,9 +5,7 @@
 # Author: Yann Autissier <yann.autissier@anotherservice.com>
 #
 # History:
-# 20140218 YA : release candidate 1.0rc3
-# 20140210 YA : release candidate 1.0rc2
-# 20140204 YA : release candidate 1.0rc1
+# 20140224 YA : release 1.0
 # 20140128 YA : cygwin compatibility, expect and pop command support for ssh connections
 # 20140108 YA : table formated output for account_* checks
 # 20131224 YA : remote execution
@@ -26,21 +24,16 @@
 # 20130814 YA : check open files for DB2, numeric output for supervision
 # 20130731 YA : first version for redhat, check few services
 #
-# BUG: check profiles should work with remote tests
-# BUG: check if binary exists on remote tests should not exit with error (check -H IVLRHS01 disk_stats)
-# BUG: check http should accept multiple port/url in operand
-# TODO: check ssh authorized_keys
-# TODO: check redhat subscription
-# TODO: support json output (-j)
-# TODO: support munin output (-m)
-# TODO: support nagios output (-n, numeric => integer, info => extended)
-#       ou alors output (text,integer,nagios,munin,json)
-#       http://nagios.manubulon.com/traduction/wiki_preview/perfdata.html
-#       https://blog.centreon.com/bonnes-pratiques-comment-developper-les-plugin-nagios/?lang=fr
+# TODO: profiles should work with tests on remote hosts
+# TODO: json output (-j)
+# TODO: munin output (-m)
+# TODO: nagios output (-n)
+# TODO: nagios exit status compatibility
 # TODO: support multiple users for ssh connections
-# TODO: specific tests for smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth
+# TODO: check smtp, smtps, pop3, pop3s, imap, imaps, smtp with antivirus, smtp auth, mysql, mssql, snmp, dhcp, dns, ldap, ldaps,
+#             disk_free, cpu, processes, memory, load_average, uptime, tcp_connections, ping, ssh, authorized_keys, redhat subscription
 #
-CHECK_RELEASE="1.0rc3"
+CHECK_RELEASE="1.0"
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
 CHECK_TMP="/tmp"
 
@@ -296,6 +289,7 @@ shift $(($OPTIND - 1))
 # function check: used in several functions, exit if binary not found
 function check() {
     # on verifie si le binaire est accessible dans $PATH
+    error=0
     for operand in $@; do
         which ${operand} >/dev/null 2>&1
         operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
@@ -316,7 +310,7 @@ fi
 # #
  #
 # default profile
-DEFAULT=""
+PROFILE_DEFAULT=""
 # this script (remote upgrade)
 CHECK_URL="http://10.100.11.80/tools/check"
 # get a list of servers from http requests
@@ -413,8 +407,9 @@ exit ${error:-0}
 # list profiles
 [ ${CHECK_LIST} ] && [ ! ${CHECK_ALL} ] && \
     echo "Listing profiles :" && \
-    echo DEFAULT: ${DEFAULT} && \
+    echo DEFAULT: ${PROFILE_DEFAULT} && \
     for profile in $(compgen -v PROFILE_); do
+       [ "${profile}" = "PROFILE_DEFAULT" ] && continue
        echo ${profile/PROFILE_/}: ${!profile}
     done && exit 0
 # output numeric values for nagios
@@ -427,6 +422,13 @@ exit ${error:-0}
  #
 # get list of tests from argv
 TESTS="$@"
+
+# #
+ # quick and dirty fix to get profile working with remote host
+#   currently, it works only with the first remote host
+[ -n "${CHECK_HOST}" ] && hosts="${CHECK_HOST#"${CHECK_HOST%%[![:space:]]*}"}" && HOSTNAME=${hosts%%[[:space:]]*}
+# TODO: check profile should work with each remote hosts (need code refactor)
+
 # if no input, try to define current profile from hostname
 [ -z "${TESTS}" ] && for profile in $(compgen -v PROFILE_); do
     # if we found a PROFILE_ variable that looks like the hostname
@@ -436,8 +438,8 @@ TESTS="$@"
             ;;
     esac
 done
-# if no input, use DEFAULT tests
-[ -n "${TESTS}" ] || TESTS="${DEFAULT}"
+# if no input, use PROFILE_DEFAULT tests
+[ -n "${TESTS}" ] || TESTS="${PROFILE_DEFAULT}"
 # then add tests from profiles
 for profile in ${CHECK_PROFILE}; do
     # check if profile is defined
@@ -848,8 +850,6 @@ function check_binary() {
 
 # disk I/O statistics
 function check_disk_stat() {
-#set -x
-#PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
     check stat || return ${CHECK_ERROR_NOT_FOUND_BINARY}
     # from http://exchange.nagios.org/directory/Plugins/System-Metrics/Storage-Subsystem/check_diskstat/details
     for disk in $@; do
@@ -1354,9 +1354,11 @@ function check_https() {
 
 # http connection
 function check_http() {
-    # TODO: accept multiple port/url in operand
+    # for operand in ${@:-127.0.0.1} ${CHECK_OPERAND}; do
     # for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
-    for operand in ${@:-127.0.0.1} ${CHECK_OPERAND}; do
+    # FIXED: accept multiple port/url in operand
+    # TODO: accept comma (,) separator in operand
+    for operand in $@ ${CHECK_OPERAND}; do
         hostname=""; addr=""; host=""; port=""; url=""; pattern=""
         # extract hostname, port, url, and pattern from the operand
         # hostname can be an expression like user:pass@host#addr
@@ -1556,12 +1558,16 @@ function check_http() {
 # echo "url: "$url
 # echo "pattern: "$pattern
 
+        # check if port is an integer
+        [ -z "${port##*[!0-9]*}" ] && error=${CHECK_ERROR_UNDEFINED} && return ${error:-0}
+
         which nc >/dev/null 2>&1 && check_http_command="nc -w 1 ${addr:-127.0.0.1} ${port:-80}"
         which timeout >/dev/null 2>&1 && TIMEOUT="timeout 1"
         [ ${TLS} ] && tls="-tls1"
         [ ${SSL} ] && which openssl >/dev/null 2>&1 && check_http_command="${TIMEOUT:-} openssl s_client -quiet -connect ${addr:-127.0.0.1}:${port:-443} ${tls:-}"
         [ -z "${check_http_command}" ] && error=${CHECK_ERROR_NOT_FOUND_BINARY} && echo -n ${CHECK_ERROR} && continue
         check_http_command="echo -e 'GET ${url:-/} HTTP/1.0\nHost: ${host:-localhost}\nUser-Agent: $(basename $0) v${CHECK_RELEASE}\n\n' |${check_http_command}"
+        # echo ${check_http_command}
         sh -c "${check_http_command}" 2>/dev/null |while read line; do
             [ ${cpt:-0} -eq 0 ] && check_http_return=(${line}) && \
             check_http_return_protocol=${check_http_return[0]} && check_http_return_code=${check_http_return[1]} && check_http_return_message=${check_http_return[2]}
@@ -1621,7 +1627,7 @@ set +o noclobber
  #
 # list all variables
 function get_variables() {
-    declare 2>/dev/null |awk '$1 ~ /^CHECK_/ {print $0}' # |sed 's/'${HOSTNAME}'/'${host#*@}'/g'
+    declare 2>/dev/null |awk '$1 ~ /^(CHECK|PROFILE)_/ {print $0}' # |sed 's/'${HOSTNAME}'/'${host#*@}'/g'
 }
 
 # list all functions
