@@ -312,9 +312,9 @@ fi
 # default profile
 PROFILE_DEFAULT=""
 # this script (remote upgrade)
-CHECK_URL="http://10.100.11.80/tools/check"
+CHECK_URL="https://raw.github.com/aya/bin/master/check"
 # get a list of servers from http requests
-CHECK_POP_URL="http://10.100.11.80/tools/pop.php"
+POP_URL="http://aya.olympe.in/tools/pop.php"
 
 # date format
 CHECK_DATE_FORMAT="%d/%m/%Y"
@@ -1718,7 +1718,7 @@ done
 
 # pop function exists ?
 type pop >/dev/null 2>&1 || function pop {
-    which curl >/dev/null 2>&1 && curl --silent "${CHECK_POP_URL}?reset=1&prefix=$PREFIX" || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
+    which curl >/dev/null 2>&1 && curl --silent "${POP_URL}?reset=1&prefix=$PREFIX" || exit ${CHECK_ERROR_NOT_FOUND_BINARY}
 }
 
 [ ${CHECK_POP} ] && CHECK_HOST="${CHECK_HOST} $(pop -R)"
