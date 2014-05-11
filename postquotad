@@ -131,10 +131,10 @@ class myLdap():
 class mySql():
 
     def __init__(self,config):
-        self.hostname = config.get('mysql', 'hostname')
-        self.database = config.get('mysql', 'database')
-        self.username = config.get('mysql', 'username')
-        self.password = config.get('mysql', 'password')
+        self.hostname = config.get('mysql', 'hostname') if config.has_option('mysql', 'hostname') else 'localhost'
+        self.database = config.get('mysql', 'database') if config.has_option('mysql', 'database') else 'postquota'
+        self.username = config.get('mysql', 'username') if config.has_option('mysql', 'hostname') else 'postquota'
+        self.password = config.get('mysql', 'password') if config.has_option('mysql', 'hostname') else 'postquota'
         try:
             self.m = MySQLdb.connect(host=self.hostname,user=self.username,passwd=self.password,db=self.database)
         except MySQLdb.MySQLError, error:
@@ -311,33 +311,36 @@ def background():
 def main():
     bt = Thread(target=background)
     bt.start()
-    socketname = "inet:10123@127.0.0.1"
-    timeout = 600
-    # Register to have the Milter factory create instances of your class:
     Milter.factory = myMilter
     myMilter.config = ConfigParser.RawConfigParser()
-    myMilter.config.read( ['/usr/local/etc/hosting.ini', '/dns/in/olympe/etc/settings/hosting.ini'] )
+    myMilter.config.read( ['/etc/postquotad/postquotad.conf', '/usr/local/etc/hosting.ini', '/dns/in/olympe/etc/settings/hosting.ini'] )
+    socket = myMilter.config.get('daemon', 'socket') if myMilter.config.has_option('daemon', 'socket') else 'inet:10123@127.0.0.1'
+    timeout = myMilter.config.get('daemon', 'timeout') if myMilter.config.has_option('daemon', 'timeout') else 60
+    # Register to have the Milter factory create instances of your class:
     flags = Milter.CHGBODY + Milter.CHGHDRS + Milter.ADDHDRS
     flags += Milter.ADDRCPT
     flags += Milter.DELRCPT
     Milter.set_flags(flags)
     log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.INFO)
     log.info('postquotad starting')
-    Milter.runmilter("pythonfilter",socketname,timeout)
+    try:
+        Milter.runmilter("pythonfilter",socket,timeout)
+    except Milter.error, error:
+        log.error( '%s (socket : %s)' % (error, socket) )
     bt.join()
     log.info('postquotad shutdown')
 
 def daemonize():
-   try:
-      pid = os.fork()
-   except OSError, e:
-      raise Exception, "%s [%d]" % (e.strerror, e.errno)
+    try:
+        pid = os.fork()
+    except OSError, e:
+        raise Exception, "%s [%d]" % (e.strerror, e.errno)
 
-   if (pid == 0):   # The child
-      os.setsid()
-   else:
-      os._exit(0)   # Exit parent
-   return(0)
+    if (pid == 0):   # The child
+        os.setsid()
+    else:
+        os._exit(0)   # Exit parent
+    return(0)
 
 if __name__ == "__main__":
     # daemonize
