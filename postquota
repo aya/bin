@@ -7,19 +7,19 @@
  # aya <yann.autissier@anotherservice.com>
 # from http://pythonhosted.org/pymilter/milter-template_8py-example.html
 
-import sys, time, getopt
+import os, sys, time, getopt
+import logging as log
+import ConfigParser
+import ldap
+import MySQLdb
 import Milter
 import StringIO
-import logging as log
 from socket import AF_INET, AF_INET6
 from Milter.utils import parse_addr
 if True:
     from multiprocessing import Process as Thread
 else:
     from threading import Thread
-import ldap
-import MySQLdb
-import ConfigParser
 
 _release='0.1.1'
 
@@ -28,6 +28,7 @@ def usage():
 
 options:
     -d, --debug         debug mode
+    -f, --foreground    do not daemonize
     -h, --help          print this message
     -q, --quiet         quiet mode
     -v, --version       print current version
@@ -38,17 +39,20 @@ def version(version=""):
 
 # Handle global options.
 try:
-    opts, args = getopt.getopt(sys.argv[1:], 'dhqv', ['debug', 'help', 'quiet', 'version'])
+    opts, args = getopt.getopt(sys.argv[1:], 'dfhqv', ['debug', 'foreground', 'help', 'quiet', 'version'])
 except getopt.GetoptError as err:
     log.warning(str(err))
     sys.exit(2)
 
+# Parse options
 for opt, arg in opts:
     if opt == "-v":
         _verbose = True
     elif opt in ("-d", "--debug"):
         _debug = True
         log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.DEBUG)
+    elif opt in ("-f", "--foreground"):
+        _foreground = True
     elif opt in ("-h", "--help"):
         usage()
         sys.exit()
@@ -323,5 +327,25 @@ def main():
     bt.join()
     log.info('postquotad shutdown')
 
+def daemonize():
+   try:
+      pid = os.fork()
+   except OSError, e:
+      raise Exception, "%s [%d]" % (e.strerror, e.errno)
+
+   if (pid == 0):   # The child
+      os.setsid()
+   else:
+      os._exit(0)   # Exit parent
+   return(0)
+
 if __name__ == "__main__":
+    # daemonize
+    try:
+        if _foreground:
+            pass
+    except:
+        daemonize()
+    # start main prog
     main()
+    sys.exit()
