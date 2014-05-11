@@ -15,17 +15,12 @@ import sys
 from socket import AF_INET, AF_INET6
 from Milter.utils import parse_addr
 if True:
-  from multiprocessing import Process as Thread, Queue
+  from multiprocessing import Process as Thread
 else:
   from threading import Thread
-  from Queue import Queue
-
-# implement quota
 import ldap
 import MySQLdb
 import ConfigParser
-
-logq = Queue(maxsize=4)
 
 class myLdap():
 
@@ -259,16 +254,13 @@ class myMilter(Milter.Base):
     ## === Support Functions ===
 
     def log(self,*msg):
-        logq.put((msg,self.id,time.time()))
+        self.linelog = ""
+        for self.i in msg:
+            self.linelog = self.linelog + str(self.i)
+        print self.linelog
 
 def background():
-    while True:
-        t = logq.get()
-        if not t: break
-        msg,id,ts = t
-        print "%s [%d]" % (time.strftime('%Y/%b/%d %H:%M:%S',time.localtime(ts)),id),
-        for i in msg: print i,
-        print
+    pass
 
 ## ===
 
@@ -288,7 +280,6 @@ def main():
     print "%s milter startup" % time.strftime('%Y/%b/%d %H:%M:%S')
     sys.stdout.flush()
     Milter.runmilter("pythonfilter",socketname,timeout)
-    logq.put(None)
     bt.join()
     print "%s milter shutdown" % time.strftime('%Y/%b/%d %H:%M:%S')
 
