@@ -7,19 +7,59 @@
  # aya <yann.autissier@anotherservice.com>
 # from http://pythonhosted.org/pymilter/milter-template_8py-example.html
 
-import sys, time
+import sys, time, getopt
 import Milter
 import StringIO
 import logging as log
 from socket import AF_INET, AF_INET6
 from Milter.utils import parse_addr
 if True:
-  from multiprocessing import Process as Thread
+    from multiprocessing import Process as Thread
 else:
-  from threading import Thread
+    from threading import Thread
 import ldap
 import MySQLdb
 import ConfigParser
+
+_release='0.1.1'
+
+def usage():
+    print """Usage: postquotad [options]
+
+options:
+    -d, --debug         debug mode
+    -h, --help          print this message
+    -q, --quiet         quiet mode
+    -v, --version       print current version
+"""
+
+def version(version=""):
+    print "postquotad v%s" % version
+
+# Handle global options.
+try:
+    opts, args = getopt.getopt(sys.argv[1:], 'dhqv', ['debug', 'help', 'quiet', 'version'])
+except getopt.GetoptError as err:
+    log.warning(str(err))
+    sys.exit(2)
+
+for opt, arg in opts:
+    if opt == "-v":
+        _verbose = True
+    elif opt in ("-d", "--debug"):
+        _debug = True
+        log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.DEBUG)
+    elif opt in ("-h", "--help"):
+        usage()
+        sys.exit()
+    elif opt in ("-q", "--quiet"):
+        _quiet = True
+        log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.ERROR)
+    elif opt in ("-v", "--version"):
+        version(_release)
+        sys.exit()
+    else:
+        assert False, "unhandled option"
 
 class myLdap():
 
@@ -277,7 +317,7 @@ def main():
     flags += Milter.ADDRCPT
     flags += Milter.DELRCPT
     Milter.set_flags(flags)
-    log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.DEBUG)
+    log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.INFO)
     log.info('postquotad starting')
     Milter.runmilter("pythonfilter",socketname,timeout)
     bt.join()
