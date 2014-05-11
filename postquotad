@@ -337,19 +337,30 @@ def daemonize(config):
     if (pid == 0):   # The child
         os.setsid()
         if config.has_option('daemon', 'user'):
+            from pwd import getpwnam as pwd
+            user = config.get('daemon', 'user')
             try:
-                from pwd import getpwnam as pwd
-                user = config.get('daemon', 'user')
                 uid = int(pwd(user).pw_uid)
-                os.seteuid(uid)
-                if config.has_option('daemon', 'group'):
-                    from grp import getgrnam as grp
-                    group = config.get('daemon', 'group')
+            except:
+                log.error('Could not find uid for user : %s' % user)
+                exit()
+            if config.has_option('daemon', 'group'):
+                from grp import getgrnam as grp
+                group = config.get('daemon', 'group')
+                try:
                     gid = int(grp(group).gr_gid)
-                    log.warning( 'Changing group could raise a fatal error on some systems')
+                except:
+                    log.error('Could not find gid for group : %s' % group)
+                    exit()
+                try:
                     os.setegid(gid)
-            except OSError:
-                log.error('Could not change user/group (%s:%s/%s:%s).  Re-run as root ?' % (user,uid,group,gid))
+                except OSError, e:
+                    log.error('Could not change group %s:%s (%s).  Re-run as root ?' % (group,gid,e.strerror))
+                    exit()
+            try:
+                os.seteuid(uid)
+            except OSError, e:
+                log.error('Could not change user %s:%s (%s).  Re-run as root ?' % (user,uid,e.strerror))
                 exit()
     else:
         os._exit(0)   # Exit parent
