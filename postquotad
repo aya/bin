@@ -308,20 +308,18 @@ def background():
 
 ## ===
 
-def main():
+def main(config):
     bt = Thread(target=background)
     bt.start()
     Milter.factory = myMilter
-    myMilter.config = ConfigParser.RawConfigParser()
-    myMilter.config.read( ['/etc/postquotad/postquotad.conf', '/usr/local/etc/hosting.ini', '/dns/in/olympe/etc/settings/hosting.ini'] )
-    socket = myMilter.config.get('daemon', 'socket') if myMilter.config.has_option('daemon', 'socket') else 'inet:10123@127.0.0.1'
-    timeout = myMilter.config.get('daemon', 'timeout') if myMilter.config.has_option('daemon', 'timeout') else 60
+    myMilter.config = config
+    socket = config.get('daemon', 'socket') if config.has_option('daemon', 'socket') else 'inet:10123@127.0.0.1'
+    timeout = config.get('daemon', 'timeout') if config.has_option('daemon', 'timeout') else 60
     # Register to have the Milter factory create instances of your class:
     flags = Milter.CHGBODY + Milter.CHGHDRS + Milter.ADDHDRS
     flags += Milter.ADDRCPT
     flags += Milter.DELRCPT
     Milter.set_flags(flags)
-    log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.INFO)
     log.info('postquotad starting')
     try:
         Milter.runmilter("pythonfilter",socket,timeout)
@@ -330,7 +328,7 @@ def main():
     bt.join()
     log.info('postquotad shutdown')
 
-def daemonize():
+def daemonize(config):
     try:
         pid = os.fork()
     except OSError, e:
@@ -338,17 +336,36 @@ def daemonize():
 
     if (pid == 0):   # The child
         os.setsid()
+        if config.has_option('daemon', 'user'):
+            try:
+                from pwd import getpwnam as pwd
+                user = config.get('daemon', 'user')
+                uid = int(pwd(user).pw_uid)
+                os.seteuid(uid)
+                if config.has_option('daemon', 'group'):
+                    from grp import getgrnam as grp
+                    group = config.get('daemon', 'group')
+                    gid = int(grp(group).gr_gid)
+                    log.warning( 'Changing group could raise a fatal error on some systems')
+                    os.setegid(gid)
+            except OSError:
+                log.error('Could not change user/group (%s:%s/%s:%s).  Re-run as root ?' % (user,uid,group,gid))
+                exit()
     else:
         os._exit(0)   # Exit parent
+
     return(0)
 
 if __name__ == "__main__":
+    log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.INFO)
+    config = ConfigParser.RawConfigParser()
+    config.read( ['/etc/postquotad/postquotad.conf', '/usr/local/etc/hosting.ini', '/dns/in/olympe/etc/settings/hosting.ini'] )
     # daemonize
     try:
         if _foreground:
             pass
     except:
-        daemonize()
+        daemonize(config)
     # start main prog
-    main()
+    main(config)
     sys.exit()
