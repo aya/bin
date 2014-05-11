@@ -25,12 +25,16 @@ import ConfigParser
 class myLdap():
 
     def __init__(self,config):
-        self.ldaphost = config.get('ldap', 'host')
-        self.ldapbase = config.get('ldap', 'base')
-        self.ldapfilter = '(objectclass=posixAccount)(objectclass=mailRecipient)(objectclass=inetSubscriber)(|(inetAuthorizedServices=smtp)(inetAuthorizedServices=*))'
+        self.ldaphost = config.get('ldap', 'host') if config.has_option('ldap', 'host') else 'localhost'
+        self.ldapport = config.get('ldap', 'port') if config.has_option('ldap', 'port') else '389'
+        self.ldapbase = config.get('ldap', 'base') if config.has_option('ldap', 'base') else 'dc=dns'
+        self.ldapfilter = config.get('ldap', 'filter') if config.has_option('ldap', 'filter') else '(objectclass=posixAccount)'
+        # useful only for debug
+        if config.has_option('ldap', 'mail'):
+            self.ldapmail = config.get('ldap', 'mail')
         self.attributes = ['owner','uid']
         try:
-            self.l = ldap.initialize('ldap://' + self.ldaphost)
+            self.l = ldap.initialize('ldap://' + self.ldaphost + ':' + self.ldapport)
             self.l.protocol_version = ldap.VERSION3
         except ldap.LDAPError, error:
             print error
@@ -39,7 +43,13 @@ class myLdap():
         baseDN = self.ldapbase
         searchScope = ldap.SCOPE_SUBTREE
         retrieveAttributes = self.attributes
-        searchFilter = '(&' + self.ldapfilter + '(mail=' + mail + '))'
+        # debug
+        try:
+            user = self.ldapmail
+            log.debug( 'Overriding SMTP AUTH user %s with %s', mail, self.ldapmail )
+        except:
+            user = mail
+        searchFilter = '(&' + self.ldapfilter + '(mail=' + user + '))'
 
         try:
             ldap_result_id = self.l.search(baseDN, searchScope, searchFilter, retrieveAttributes)
@@ -269,7 +279,7 @@ def main():
     flags += Milter.ADDRCPT
     flags += Milter.DELRCPT
     Milter.set_flags(flags)
-    log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.INFO)
+    log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.DEBUG)
     log.info('postquotad starting')
     Milter.runmilter("pythonfilter",socketname,timeout)
     bt.join()
