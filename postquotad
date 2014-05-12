@@ -30,6 +30,7 @@ options:
     -d, --debug         debug mode
     -f, --foreground    do not daemonize
     -h, --help          print this message
+    -l, --ldap          enable ldap lookup
     -q, --quiet         quiet mode
     -v, --version       print current version
 """
@@ -39,16 +40,15 @@ def version(version=""):
 
 # Handle global options.
 try:
-    opts, args = getopt.getopt(sys.argv[1:], 'dfhqv', ['debug', 'foreground', 'help', 'quiet', 'version'])
+    opts, args = getopt.getopt(sys.argv[1:], 'dfhlqv', ['debug', 'foreground', 'help', 'ldap', 'quiet', 'version'])
 except getopt.GetoptError as err:
     log.warning(str(err))
     sys.exit(2)
 
+_debug = _foreground = _help = _ldap = _quiet = _version = False
 # Parse options
 for opt, arg in opts:
-    if opt == "-v":
-        _verbose = True
-    elif opt in ("-d", "--debug"):
+    if opt in ("-d", "--debug"):
         _debug = True
         log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.DEBUG)
     elif opt in ("-f", "--foreground"):
@@ -56,6 +56,8 @@ for opt, arg in opts:
     elif opt in ("-h", "--help"):
         usage()
         sys.exit()
+    elif opt in ("-l", "--ldap"):
+        _ldap = True
     elif opt in ("-q", "--quiet"):
         _quiet = True
         log.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=log.ERROR)
@@ -181,7 +183,8 @@ class myMilter(Milter.Base):
 
     def __init__(self):  # A new instance with each new connection.
         self.id = Milter.uniqueID()  # Integer incremented with each call.
-        self.ldap = myLdap(self.config)
+        if _ldap:
+            self.ldap = myLdap(self.config)
         self.mysql = mySql(self.config)
 
     # each connection runs in its own thread and has its own myMilter
@@ -225,24 +228,32 @@ class myMilter(Milter.Base):
         self.F = mailfrom
         self.R = []  # list of recipients
         self.fromparms = Milter.dictfromlist(str)   # ESMTP parms
-        self.user = self.getsymval('{auth_authen}') # authenticated user
+        self.auth = self.getsymval('{auth_authen}') # authenticated user
         # implement quota
-        if self.user:
-            # log.info("mail:", self.user, *str)
-            self.ldapUser = self.ldap.getUser(self.user)
-            if not self.ldapUser:
-                self.setreply('554','5.7.1','This user doesn\'t have a valid ldap account (' + self.user + ')')
-                log.info('Unable to find user ' + self.user + ' ' + mailfrom + ' from ' + self.IPname )
+        if self.auth:
+            if _ldap:
+                # debug, force ldap user
+                try:
+                    self.user = self.ldap.ldapmail
+                    log.debug( 'Overriding SMTP AUTH user %s with %s', mail, self.ldapmail )
+                except:
+                    self.user = self.ldap.getUser(self.auth)
+                # log.info("mail:", self.auth, *str)
+                if not self.user:
+                    self.setreply('554','5.7.1','This user doesn\'t have a valid account (' + self.auth + ')')
+                    log.info('Unable to find ldap user ' + self.auth + ' ' + mailfrom + ' from ' + self.IPname )
+                    return Milter.REJECT
+            else:
+                self.user = self.auth
+            self.uid = self.mysql.getUid(self.user)
+            if not self.uid:
+                self.setreply('554','5.7.1','This user doesn\'t have a valid account (' + self.auth + ')')
+                log.info('Unable to find mysql uid ' + self.auth + ' ' + mailfrom + ' from ' + self.IPname + ')')
                 return Milter.REJECT
-            self.mysqlUid = self.mysql.getUid(self.ldapUser)
-            if not self.mysqlUid:
-                self.setreply('554','5.7.1','This user doesn\'t have a valid mysql account (' + self.user + ')')
-                log.info('Unable to find uid ' + self.user + ' ' + mailfrom + ' from ' + self.IPname + ')')
-                return Milter.REJECT
-            self.quota = self.mysql.getQuota(self.mysqlUid)
+            self.quota = self.mysql.getQuota(self.uid)
             if not self.quota:
-                self.setreply('554','5.7.1','This user doesn\'t have a valid quota (' + self.user + ')')
-                log.info('Unable to find uid ' + self.user + ' ' + mailfrom + ' from ' + self.IPname + ')')
+                self.setreply('554','5.7.1','This user doesn\'t have a valid quota (' + self.auth + ')')
+                log.info('Unable to find uid ' + self.auth + ' ' + mailfrom + ' from ' + self.IPname + ')')
                 return Milter.REJECT
         self.fp = StringIO.StringIO()
         return Milter.CONTINUE
@@ -271,15 +282,15 @@ class myMilter(Milter.Base):
             return Milter.CONTINUE
         if self.quota['used'] + len(self.R) > self.quota['max']:
             self.setreply('554','5.7.1','User quota exceeded ('+str(self.quota['max'])+') ! Please try again later')
-            log.info('Quota exceeded for user ' + self.ldapUser + ' <' + self.user + '> (' + str(self.quota['used']) + ' + ' + str(len(self.R)) + ' > ' + str(self.quota['max']) + ') from ' + self.IPname)
+            log.info('Quota exceeded for user ' + self.user + ' <' + self.auth + '> (' + str(self.quota['used']) + ' + ' + str(len(self.R)) + ' > ' + str(self.quota['max']) + ') from ' + self.IPname)
             return Milter.REJECT
         else:
-            if self.mysql.updateQuota(self.mysqlUid, self.quota['used'] + len(self.R)):
-                log.info('Quota updated for user ' + self.ldapUser + ' <' + self.user + '> (' + str(self.quota['used'] + len(self.R)) + '/' + str(self.quota['max']) + ') from ' + self.IPname)
+            if self.mysql.updateQuota(self.uid, self.quota['used'] + len(self.R)):
+                log.info('Quota updated for user ' + self.user + ' <' + self.auth + '> (' + str(self.quota['used'] + len(self.R)) + '/' + str(self.quota['max']) + ') from ' + self.IPname)
                 return Milter.CONTINUE
             else:
                 self.setreply('550','5.7.1','Internal error while updating your quota ! Please try again later')
-                log.info('Unable to update quota for user ' + self.ldapUser + ' <' + self.user + '> (used: ' + str(self.quota['used']) + ', count: ' + str(len(self.R)) + ') from ' + self.IPname)
+                log.info('Unable to update quota for user ' + self.user + ' <' + self.auth + '> (used: ' + str(self.quota['used']) + ', count: ' + str(len(self.R)) + ') from ' + self.IPname)
                 return Milter.REJECT
 
     @Milter.noreply
