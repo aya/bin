@@ -1,0 +1,34 @@
+#!/bin/bash
+# Check memory usage of running processes
+# Yann Autissier <yann.autissier@gmail.com> le 09/10/2015
+
+#TODO: check state & ppid of process to summarize only once the shared memory processes
+
+[ "$1" = "-x" -o "$1" = "--extended" ] && EXTENDED=1 && shift
+[ "$1" = "-r" -o "$1" = "--sortby-ram" ] && SORT='sort -n -k 4,4' && shift
+[ "$1" = "-s" -o "$1" = "--sortby-swap" ] && SORT='sort -n -k 6,6' && shift
+[ "$1" = "-v" -o "$1" = "--sortby-virtual" ] && SORT='sort -n -k 8,8' && shift
+[ "$1" = "-h" ] && echo -e "Usage: $0 [-[hrsv]]
+Check memory usage of running processes
+
+    -r, --sortby-rss\tsort by ascending ram usage
+    -s, --sortby-swap\tsort by ascending swap usage
+    -v, --sortby-vsz\tsort by ascending virtual memory
+    -x, --extended\tshow private and shared memory usage
+" && exit
+
+for proc in $(find /proc/ -maxdepth 1 -type d 2>/dev/null| egrep '^/proc/[0-9]+$') ; do
+    pid=${proc##*/}
+    # swap=$(awk '$1 == "Swap:" {sum+=$2;} END {print sum}' ${proc}/smaps 2>/dev/null)
+    # read rss vsz name state <<< $(ps Sh -p $pid -o rss,vsz,comm,stat)
+    # let "${rss:-0}" 2>/dev/null && [ ${rss:-0} -ne 0 ] && printf "PID: %-5s RSS: %-10s SWAP: %-10s VSZ: %-10s (%s)\n" "$pid" "$rss" "$swap" "$vsz" "$name" "$state"
+    if [ ${EXTENDED:-0} -eq 1 ]; then
+        name=$(cat ${proc}/comm 2>/dev/null)
+        read rss private shared size swap <<< $(awk '$1 ~ /^Rss:/ {rss+=$2}; $1 ~ /^Private_/ {private+=$2}; $1 ~ /^Shared_/ {shared+=$2}; $1 ~ /^Size/ {size+=$2}; $1 ~ /^Swap/ {swap+=$2}; END {print rss,private,shared,size,swap}' ${proc}/smaps 2>/dev/null)
+        let "${rss:-0}" 2>/dev/null && [ ${rss:-0} -ne 0 ] && printf "PID: %-5s RSS: %-10s SWAP: %-10s VSZ: %-10s PRV: %-10s SHR: %-10s (%s)\n" "$pid" "$rss" "$swap" "$size" "$private" "$shared" "$name"
+    else
+        read name rss size swap <<< $(awk '$1 == "Name:" {name=$2}; $1 == "VmRSS:" {rss=$2}; $1 == "VmSize:" {size=$2}; $1 == "VmSwap:" {swap=$2}; END {print name,rss,size,swap}' ${proc}/status 2>/dev/null)
+        let "${rss:-0}" 2>/dev/null && [ ${rss:-0} -ne 0 ] && printf "PID: %-5s RSS: %-10s SWAP: %-10s VSZ: %-10s (%s)\n" "$pid" "$rss" "$swap" "$size" "$name"
+    fi
+done |${SORT:-tee} |awk 'function sizeof(n) {split("KB MB GB TB",unit); size=0; for(i=2; size < 1 && i > -2; i--) size = n / (2**(10*i)); return sprintf("%.2f %s",size,unit[i+2]);} {rss+=$4; swap+=$6; vsz+=$8; print $0} END {printf "TOTAL: %-3s RSS: %-10s SWAP: %-10s VSZ: %-10s\n","",sizeof(rss),sizeof(swap),sizeof(vsz)}'
+
