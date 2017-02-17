@@ -1,0 +1,150 @@
+#!/bin/bash
+#
+# Yann Autissier <yann.autissier@gmail.com>
+# 17.02.2017
+#
+# Invoked by keepalived from master/slave to slave/master transition to
+# adapt network configuration when load balancer act as real server too.
+#
+# Add VIP address on localhost for slave to accept incoming packets sent
+# to the VIP address.
+#
+# Drop arp requests for the VIP in order to avoid slaves to acquire the
+# VIP and alter arp responses to force real IP address instead of VIP 
+#
+# Add an iptables rule on the master to mark incoming packets on the VIP
+# address to be handled by LVS.
+
+usage() {
+  echo "Usage: $0 {add|del} [-f [mark]] [-p port] vip_address [iface or rip_address]"
+  echo
+  echo "Adapt network configuration for LVS servers acting both as loadbalancers"
+  echo "and real servers. Invoked by keepalived for master/slave transitions."
+  echo
+  echo "Options:"
+  echo -e "\t-f [mark]\tSet mark 'mark' on packets received on the VIP address."
+  echo -e "\t\t\tIf defined, 'mark' MUST be an integer or an hexadecimal."
+  echo -e "\t\t\tIf undefined, 'mark' default to 'port' if defined, or"
+  echo -e "\t\t\thexadecimal conversion of the VIP address otherwise."
+  echo -e "\t-p port\t\tApply the mark only on packets destinated to port 'port'."
+  echo -e "\t\t\t'port' MUST be an interger."
+  echo -e "\tvip_address\tThe Virtual IP address used by the load balancer."
+  echo -e "\t\t\t'vip_address' MUST be an IPV4 address."
+  echo -e "\trip_address\tThe Real IP address of the server, or the interface"
+  echo -e "\t\t\ton which the Real IP address is configured."
+  exit 1
+}
+
+# #
+ #
+# check binaries
+which ip >/dev/null || { echo "ERROR: Unable to find command ip" && exit 254; }
+which iptables >/dev/null || { echo "ERROR: Unable to find command iptables" && exit 254; }
+which arptables >/dev/null || { echo "ERROR: Unable to find command arptables" && exit 254; }
+
+# REGEX
+IP_REGEX='\b^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])$'
+HEXA_REGEX='^(0[Xx])?[0-9A-Fa-f]{1,8}$'
+
+# # check args
+ #
+# $1 = add/del
+[ "$1" = "add" -o "$1" = "del" ] && CMD="$1" && shift || usage
+# shift args
+while [ -n "$1" ]; do
+    case $1 in
+      -h|--help)
+          usage
+          ;;
+      -f)
+        # check fwmark option and set MARK if next param is an integer or an hexa
+        FWMARK=1 && shift
+        # if mark is an integer
+        if [ -n "${1##*[!0-9]*}" ] && [ $1 -ge 0 -a $1 -le 4294967295 ]; then
+            # convert to hexa
+            MARK="0x$(printf '%02x' $1)" && shift
+        # if mark is an hexadecimal
+        elif echo "$1" |grep -E "${HEXA_REGEX}" >/dev/null 2>&1; then
+            # downcase
+            MARK="${1,,}" && shift
+        fi
+        ;;
+      -p)
+        # check port option and set PORT if next param is an integer
+        shift && [ -n "${1##*[!0-9]*}" ] && [ $1 -ge 0 -a $1 -le 65535 ] && PORT="$1" && shift || { echo "ERROR: port '$1' is not a valid port" && exit 1; }
+        ;;
+      *)
+        # vip_address
+        echo "$1" |grep -E "${IP_REGEX}" >/dev/null 2>&1 && VIP="$1" && shift || { echo "ERROR: vip_address '$1' is not a valid IPV4 address" && exit 1; }
+        # rip_address or iface (default to eth0) of rip_address
+        if echo "$1" |grep -E "${IP_REGEX}" >/dev/null 2>&1; then
+            RIP="$1"
+            IFACE="$(ip addr |awk '$1 == "inet" && $2 ~ "/^'${RIP}'(\/(1?[0-9]|2[0-4]))?$" {print $NF}' |head -1)"
+            shift
+        elif [ -n "$(ip link 2>/dev/null |awk '$0 ~ /UP/ && $2 ~ /^'${1:-eth0}'/')" ]; then
+            IFACE="${1:-eth0}"
+            RIP="$(ip addr |awk '$1 == "inet" && $NF == "'${IFACE}'" {print $2}' |head -1)"
+            RIP="${RIP%/*}"
+            shift
+        fi
+        # we need the RIP for arptables rule
+        [ -z "${RIP}" ] && echo "ERROR: Unable to find RIP address" && exit 1
+        ;;
+    esac
+done
+
+# MARK default to hexadecimal conversion of VIP address or port if defined
+[ $FWMARK ] && [ -z "${MARK}" ] && { [ -n "${PORT}" ] && MARK="0x$(printf '%02x' ${PORT})" || MARK="0x$(printf '%02x' ${VIP//./ })"; }
+
+# add/del rules to solve ARP issues
+arptables_rules() {
+    # rule to drop arp request for the VIP
+    if [ ${test} "$(arptables -L INPUT -n 2>/dev/null |awk '$0 ~ /^-j DROP -d '${VIP//\./\\.}'/')" ]; then
+        arptables ${flag} INPUT -j DROP -d ${VIP} 2>/dev/null || { echo "ERROR: Unable to ${cmd} rule to drop arp requests for the VIP" && exit 2; }
+    fi
+    # rule to alter arp response for the VIP
+    if [ ${test} "$(arptables -L OUTPUT -n 2>/dev/null |awk '$0 ~ /^-j mangle -s '${VIP//\./\\.}' --mangle-ip-s '${RIP//\./\\.}'/')" ]; then
+        arptables ${flag} OUTPUT -j mangle -s ${VIP} --mangle-ip-s ${RIP} 2>/dev/null || { echo "ERROR: Unable to ${cmd} rule to alter arp response for the VIP" && exit 2; }
+    fi
+}
+
+# add/del rules to mark packets to be handled by LVS
+iptables_rules() {
+    # rule to mark incoming packets on the VIP on a specific port
+    if [ -n "${PORT}" ]; then
+        if [ ${test} "$(iptables -t raw -L -n 2>/dev/null |awk '$1 == "MARK" && $2 == "tcp" && $4 == "0.0.0.0/0" && $5 == "'${VIP}'" && $7 == "dpt:'${PORT}'" && $NF == "'${MARK}'"')" ]; then
+            iptables -t raw ${flag} PREROUTING -i ${IFACE} -p tcp -s 0/0 -d ${VIP} --dport ${PORT} -j MARK --set-mark ${MARK} || { echo "ERROR: Unable to ${cmd} rule to mark incoming packets on the VIP on a specific port" && exit 2; }
+        fi
+    # rule to mark any incoming packets on the VIP
+    else
+        if [ ${test} "$(iptables -t raw -L -n 2>/dev/null |awk '$1 == "MARK" && $2 == "tcp" && $4 == "0.0.0.0/0" && $5 == "'${VIP}'" && $NF == "'${MARK}'"')" ]; then
+            iptables -t raw ${flag} PREROUTING -i ${IFACE} -p tcp -s 0/0 -d ${VIP} -j MARK --set-mark ${MARK} || { echo "ERROR: Unable to ${cmd} rule to mark any incoming packets on the VIP" && exit 2; }
+        fi
+    fi
+}
+
+# add/del the VIP on localhost
+ip_addr() {
+    if [ ${test} "$(ip addr show lo 2>/dev/null |awk '$1 == "inet" && $4 == "host" && $2 == "'${VIP}'/32"')" ]; then
+        ip addr ${cmd} ${VIP}/32 scope host dev lo 2>/dev/null || { echo "ERROR: Unable to ${cmd} the VIP on localhost" && exit 2; }
+    fi
+}
+
+# add/remove the VIP on localhost and apply arptables/iptables rules
+case ${CMD} in
+  add)
+    cmd="add" test="-z" flag="-A" arptables_rules
+    [ $FWMARK ] && cmd="del" test="-n" flag="-D" iptables_rules
+    cmd="add" test="-z" ip_addr
+    ;;
+  del)
+    cmd="del" test="-n" ip_addr
+    [ $FWMARK ] && cmd="add" test="-z" flag="-A" iptables_rules
+    cmd="del" test="-n" flag="-D" arptables_rules
+    ;;
+esac
+
+# echo SUCCESS
+echo "SUCCESS: ${CMD} VIP ${VIP} on localhost"
+exit 0
+
