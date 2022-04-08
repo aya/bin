@@ -1,4 +1,3 @@
-bin
-===
+# bin
 
-~/bin
+aya's ~/.local/bin
