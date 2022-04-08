@@ -1,0 +1,392 @@
+# # check - test script for linux server
+ #
+# functions override - check_function_account
+# History:
+# 20140324 YA : extract account functions in external file
+
+# default to CHECK_RELEASE version
+eval CHECK_RELEASE_${BASH_SOURCE##*/check_}="${CHECK_RELEASE}"
+
+# active accounts
+function check_account_active() {
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    grep -vE ':\*|:\!' /etc/shadow 2>/dev/null |awk -F: '{print $1}' |xargs -n1 |awk '!t[$0]++' |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}
+
+# account lastlog
+function check_account_lastlog() {
+    check lastlog || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_TABLE_FIELD_DATE}${CHECK_TABLE_FIELD_ADDRESS}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    LANG=en_EN lastlog 2>/dev/null |awk '$2 ~ /(pts|tty)/' |(\
+        while read user pts address date; do
+            [ -z "${user}" ] && continue
+            # reset line
+            line=""
+            # date
+            [ ${CHECK_NUMERIC} ] && date="$(date -d "${date}" +%s 2>/dev/null)" || date="$(date -d "${date}" +${CHECK_DATE_FORMAT} 2>/dev/null)"
+            # account
+            [ ${CHECK_NUMERIC} ] && user="$(id -u ${user} 2>/dev/null || echo ${user})"
+            # address
+            [ "${pts:0:3}" = "pts" ] || address=""
+            # prepare line
+            [ ${CHECK_TABLE} ] && line="${line}${table_prefix}"
+            [ ${CHECK_TABLE} ] && line="${line}\"${user}\";" || line="${line}${CHECK_FIELD_ACCOUNT}: ${user}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${date}\";" || line="${line}${CHECK_FIELD_DATE}: ${date}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${address}\";" || line="${line}${CHECK_FIELD_ADDRESS}: ${address}"
+            # print line
+            echo -ne "${line}${CHECK_RETURN_CHAR}"
+            user=""; pts=""; address=""; date=""; line=""
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# account last logged in users
+function check_account_login() {
+    check last || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_TABLE_FIELD_DATE}${CHECK_TABLE_FIELD_ADDRESS}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    LANG=en_EN last 2>/dev/null |awk '$2 ~ /(pts|tty)/' |(\
+        while read user pts address date; do 
+            [ -z "${user}" ] || [ "${user}" = "reboot" ] && continue
+            # reset line
+            line=""
+            # date
+            date="$(echo ${date} |awk '{print $1" "$2" "$3" "$4}')"
+            [ ${CHECK_NUMERIC} ] && date="$(date -d "${date}" +%s 2>/dev/null)" || date="$(date -d "${date}" +${CHECK_DATE_FORMAT} 2>/dev/null)"
+            # account
+            [ ${CHECK_NUMERIC} ] && user="$(id -u ${user} 2>/dev/null || echo ${user})"
+            # address
+            [ "${pts:0:3}" = "pts" ] || address=""
+            [ "${pts:0:3}" = "tty" ] && address=localhost
+            # prepare line
+            [ ${CHECK_TABLE} ] && line="${line}${table_prefix}"
+            [ ${CHECK_TABLE} ] && line="${line}\"${user}\";" || line="${line}${CHECK_FIELD_ACCOUNT}: ${user}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${date}\";" || line="${line}${CHECK_FIELD_DATE}: ${date}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${address}\";" || line="${line}${CHECK_FIELD_ADDRESS}: ${address}"
+            # print line
+            echo -ne "${line}${CHECK_RETURN_CHAR}"
+            user=""; pts=""; address=""; date=""; line=""
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+function check_all_account_list() {
+    check getent || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    ALL=1 check_account_list $@
+}
+
+# account list
+function check_account_list() {
+    check lastlog ps || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_TABLE_FIELD_UID}${CHECK_TABLE_FIELD_GID}${CHECK_TABLE_FIELD_DESCRIPTION}${CHECK_TABLE_FIELD_LOGIN_SHELL}${CHECK_TABLE_FIELD_LOGIN_STATUS}${CHECK_TABLE_FIELD_PASSWORD_TYPE}${CHECK_TABLE_FIELD_LASTLOG}${CHECK_TABLE_FIELD_LOGIN_SERVICES}${CHECK_RETURN_CHAR}"
+    # on liste le fichier /etc/passwd
+    [ ${ALL} ] && check_account_list_command="getent passwd" || check_account_list_command="cat /etc/passwd"
+    eval ${check_account_list_command} 2>/dev/null |grep -vE '^(#|$)' |(\
+        # pour chaque user
+        while IFS=":" read user password uid gid description homedir loginshell; do
+            [ -z "${user}" ] && continue
+            # reset line
+            line=""
+            # check login shell
+            case "${loginshell}" in
+                /sbin/nologin|/sbin/false)
+                    login_status='nologin'
+                    ;;
+                /bin/*sh|/usr/bin/*sh)
+                    login_status='enabled'
+                    ;;
+                /bin/sync|/sbin/shutdown|/sbin/halt)
+                    login_status='restricted'
+                    ;;
+                *)
+                    login_status='unknown'
+                    ;;
+            esac
+            # check password
+            shadow=$(cat /etc/shadow 2>/dev/null |grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $1 == "'${user}'" {print $2}')
+            [ "${password}" = 'x' ] && account_password="${shadow}" || account_password="${password}"
+            # check password algorithm and status
+            case "${account_password}" in
+                \$1\$*|\$md5\$*)
+                    password_type='md5'
+                    ;;
+                \$2\$*|\$2a\$*|\$2x\$*|\$2y\$*)
+                    password_type='blowfish'
+                    ;;
+                \$3\$*)
+                    password_type='nt-hash'
+                    ;;
+                \$4\$*)
+                    password_type='sha1'
+                    ;;
+                \$5\$*)
+                    password_type='sha2-256'
+                    ;;
+                \$6\$*)
+                    password_type='sha2-512'
+                    ;;
+                \$NT\$*)
+                    password_type='ntlm'
+                    ;;
+                '*'|'!')
+                    password_type='locked'
+                    ;;
+                '!!')
+                    password_type='expired'
+                    ;;
+                '')
+                    password_type='empty'
+                    ;;
+                *)
+                    password_type='unknown'
+                    ;;
+            esac
+            # check last login
+            last_login="$(LANG=en_EN lastlog -u ${user} 2>/dev/null |sed 1d |awk '$2 ~ /pts/ {$1=$2=$3=""; print}; $2 ~ /tty/ {$1=$2=""; print}')"
+            [ -n "${last_login}" ] && [ ${CHECK_NUMERIC} ] && last_login=$(date -d "${last_login}" +%s 2>/dev/null)
+            [ -n "${last_login}" ] && [ ! ${CHECK_NUMERIC} ] && last_login=$(date -d "${last_login}" +${CHECK_DATE_FORMAT} 2>/dev/null)
+            # [ -z "${last_login}" ] && last_login="never"
+            # check if account has a crontab or run background processes
+            ls /var/spool/cron 2>/dev/null |awk '$1 == "'${user}'" {print $1}' |grep ${user} >/dev/null && service="crontab" 
+            ps aux 2>/dev/null |awk '$7 == "?" && $1 == "'${user}'" {print $1}' |grep ${user} >/dev/null && service="${account_list_service} process"
+            [ -n "${service}" ] && service="${service## }"
+            # [ -z "${service}" ] && service="none"
+            # print active accounts without password in RED
+            [ "${login_status}" = "enabled" ] && [ "${password_type}" = "empty" ] && line="\e[01;31m"
+            # prepare line
+            [ ${CHECK_TABLE} ] && line="${line}${table_prefix}"
+            [ ${CHECK_TABLE} ] && line="${line}\"${user}\";" || line="${line}${CHECK_FIELD_ACCOUNT}: ${user}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${uid}\";" || line="${line}${CHECK_FIELD_UID}: ${uid}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${gid}\";" || line="${line}${CHECK_FIELD_GID}: ${gid}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${description//\"/}\";" || line="${line}${CHECK_FIELD_DESCRIPTION}: ${description//\"/}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${loginshell}\";" || line="${line}${CHECK_FIELD_LOGIN_SHELL}: ${loginshell}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${login_status}\";" || line="${line}${CHECK_FIELD_LOGIN_STATUS}: ${login_status}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${password_type}\";" || line="${line}${CHECK_FIELD_PASSWORD_TYPE}: ${password_type}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${last_login}\";" || line="${line}${CHECK_FIELD_LASTLOG}: ${last_login}, "
+            [ ${CHECK_TABLE} ] && line="${line}\"${service}\";" || line="${line}${CHECK_FIELD_LOGIN_SERVICES}: ${service}"
+            # end of line for:  print active accounts without password in RED
+            [ "${login_status}" = "enabled" ] && [ "${password_type}" = "empty" ] && line="${line}\e[0m"
+            # print line
+            echo -ne "${line}${CHECK_RETURN_CHAR}"
+            # reset line
+            user=""; password=""; uid=""; gid=""; description=""; homedir=""; loginshell=""; login_status=""; password_type="unknown"; shadow=""; last_login=""; service=""; line=""
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# account logged in
+function check_account_logged_in() {
+    check ps || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    ps aux |awk '$7 ~ /pts|tty/ {print $1}' 2>/dev/null |xargs -n1 |awk '!t[$0]++' |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}
+
+# account with crontab
+function check_account_with_crontab() {
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    ls -l /var/spool/cron /var/spool/cron/* 2>/dev/null |awk '$1 ~ /^-/ {print $3}' |xargs -n1 |awk '!t[$0]++' |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # TODO: get content of cronjobs
+    # [ ${CHECK_EXTENDED} ] && for account_with_crontab_user in ${account_with_crontab}; do 
+    #     cat /var/spool/cron/${account_with_crontab_user} /var/spool/cron/*/${account_with_crontab_user} 2>/dev/null |awk '$0 !~ /^(#|$)/ {print "'${account_with_crontab_user}': "$0}'
+    # done
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}
+
+# account with privileges
+function check_account_with_privilege() {
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    echo $(cat /etc/passwd 2>/dev/null |awk 'BEGIN {FS=":"} $3 == "0" {print $1}') $(CHECK_NUMERIC="" CHECK_TABLE="" CHECK_RETURN="" CHECK_SEPARATOR=" "  CHECK_RETURN_CHAR='\n' check_account_with_sudo) |xargs -n1 |awk '!t[$0]++' |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # TODO: check sudo lines
+    # [ ${CHECK_EXTENDED} ] && for account_with_privilege_user in ${account_with_privilege}; do 
+    #     echo ${account_with_privilege_user}
+    # done
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}
+
+# account with process
+function check_account_with_process() {
+    check ps || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    ps aux 2>/dev/null |awk '$7 == "?" {print $1}' |awk '!t[$0]++' |xargs -n1 |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}
+
+# account with sudo privileges
+function check_account_with_sudo() {
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on prepare la liste
+    # user or group with sudo (root    ALL=(ALL)       ALL)
+    for account_or_group in $(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null |awk '$0 !~ /^(#|$)/ && $2 ~ /=/ && $3 ~ /ALL/ {print $1}'); do 
+        # getent will fail if group does not exist
+        [ ${BASH_VERSION:0:1} -ge 3 ] && set +o pipefail
+        # group begins with %
+        [ ${account_or_group:0:1} = "%" ] && account_with_sudo="${account_with_sudo} $(getent group ${account_or_group/\%/} 2>/dev/null|awk 'BEGIN {FS=":"} {print $4}' |sed 's/,/ /g')" || account_with_sudo="${account_with_sudo} ${account_or_group}"
+        [ ${BASH_VERSION:0:1} -ge 3 ] && set -o pipefail
+    done
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # on affiche la liste
+    echo ${account_with_sudo} |xargs -n1 |awk '!t[$0]++' |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}
+
+# account without password
+function check_account_without_password() {
+    # on affiche un retour chariot selon les options
+    [ ! ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || [ ${CHECK_QUIET} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    # on recupere le prefixe de l'affichage des entetes au format tableur
+    get_table_field_prefix ${CHECK_PREFIX}
+    # on recupere le prefixe de l'affichage au format tableur
+    get_table_prefix ${FUNCNAME#check_}
+    # on affiche les entetes du tableau
+    [ ${CHECK_TABLE} ] && [ ${CHECK_FIELD} ] && echo -ne "${table_field_prefix}${CHECK_TABLE_FIELD_ACCOUNT}${CHECK_RETURN_CHAR}"
+    # on affiche la liste
+    cat /etc/passwd /etc/shadow 2>/dev/null |grep -vE '^(#|$)' |awk 'BEGIN {FS=":"} $2 == "" {print $1}' |sort -u |(\
+        while read account; do
+            line="${account}"
+            [ ${CHECK_NUMERIC} ] && line="$(id -u ${account} 2>/dev/null || echo ${account})"
+            [ ${CHECK_TABLE} ] && line="${table_prefix}\"${line}\";"
+            echo -ne "${line}${CHECK_SEPARATOR}"
+        done
+    )
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    # on affiche un retour chariot selon les options
+    [ ${CHECK_TABLE} ] || [ ${CHECK_RETURN} ] || echo -ne "${CHECK_RETURN_CHAR}"
+    return ${error:-0}
+}

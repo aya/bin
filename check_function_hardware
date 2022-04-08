@@ -1,0 +1,79 @@
+# # check - test script for linux server
+ #
+# functions override - check_function_hardware
+# History:
+# 20140324 YA : extract bios and hardware functions in external files
+
+# default to CHECK_RELEASE version
+eval CHECK_RELEASE_${BASH_SOURCE##*/check_}="${CHECK_RELEASE}"
+
+# bios release date
+function check_bios_release_date() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t0 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /Release Date:/ {$1=$2=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# bios vendor
+function check_bios_vendor() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t0 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /Vendor:/ {$1=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# bios version
+function check_bios_version() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t0 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /Version:/ {$1=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# hardware type
+function check_hardware_type() {
+    check uname || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    uname -m 2>/dev/null || uname -i 2>/dev/null
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# hardware manufacturer
+function check_hardware_manufacturer() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t1 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /Manufacturer:/ {$1=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# hardware product name
+function check_hardware_product_name() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t1 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /Product Name:/ {$1=$2=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# hardware serial number
+function check_hardware_serial_number() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t1 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /Serial Number:/ {$1=$2=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# hardware uuid
+function check_hardware_uuid() {
+    check dmidecode || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # dmidecode -t1 doesn't work on RHEL3
+    dmidecode 2>/dev/null |awk '$0 ~ /UUID:/ {$1=""; print}' |head -1 |sed 's/^ *//'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}

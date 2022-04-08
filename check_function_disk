@@ -1,0 +1,208 @@
+# # check - test script for linux server
+ #
+# functions override - check_function_disk
+# History:
+# 20140324 YA : extract disk functions in external files
+
+# default to CHECK_RELEASE version
+eval CHECK_RELEASE_${BASH_SOURCE##*/check_}="${CHECK_RELEASE}"
+
+# disk free
+function check_disk_free() {
+    check df || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    [ "${CHECK_QUIET}" ] || echo
+    df -HP ${@//,/ } ${CHECK_OPERAND//,/ }| grep -vE '^(Filesystem|Sys.)' | awk '{ printf "%-16s%-4s / %-4s (%s)\n", $6, $5, $2, $1 }'
+    error=$? && [ ${error} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk I/O statistics
+function check_disk_stat() {
+#set -x
+#PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+    check stat || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    # from http://exchange.nagios.org/directory/Plugins/System-Metrics/Storage-Subsystem/check_diskstat/details
+    for disk in $@; do
+        WARNING="500,25000,25000"
+        CRITICAL="1000,50000,50000"
+
+        E_OK=0
+        E_WARNING=1
+        E_CRITICAL=2
+        E_UNKNOWN=3
+
+        # generate HISTFILE filename
+        HISTFILE=${CHECK_TMP}/.check-${USER}-disk_stat.${disk}
+
+        # process thresholds
+        WARN_TPS=$(echo $WARNING | cut -d , -f 1)
+        WARN_READ=$(echo $WARNING | cut -d , -f 2)
+        WARN_WRITE=$(echo $WARNING | cut -d , -f 3)
+        CRIT_TPS=$(echo $CRITICAL | cut -d , -f 1)
+        CRIT_READ=$(echo $CRITICAL | cut -d , -f 2)
+        CRIT_WRITE=$(echo $CRITICAL | cut -d , -f 3)
+
+        if [ -z "$WARN_TPS" -o -z "$WARN_READ" -o -z "$WARN_WRITE" ]; then
+            echo "Need 3 values for warning threshold (tps,read,write)"
+            return $E_UNKNOWN
+        fi
+        if [ -z "$CRIT_TPS" -o -z "$CRIT_READ" -o -z "$CRIT_WRITE" ]; then
+            echo "Need 3 values for critical threshold (tps,read,write)"
+            return $E_UNKNOWN
+        fi
+                
+        if [ ! -f "/sys/block/$disk/stat" ]; then
+            return $E_UNKNOWN
+        fi
+
+        NEWDISKSTAT=$(cat /sys/block/$disk/stat 2>/dev/null)
+
+
+        if [ ! -f $HISTFILE ]; then
+            echo $NEWDISKSTAT >$HISTFILE
+            return $E_UNKNOWN
+        fi
+
+        [ -f $HISTFILE ] || return $E_UNKNOWN
+
+        OLDDISKSTAT=$(cat $HISTFILE)
+
+        if [ $? -ne 0 ]; then
+            return $E_UNKNOWN
+        fi
+
+        OLDDISKSTAT_TIME=$(stat $HISTFILE 2>/dev/null | grep Modify | sed 's/^.*: \(.*\)$/\1/')
+        OLDDISKSTAT_EPOCH=$(date -d "$OLDDISKSTAT_TIME" +%s 2>/dev/null)
+        NEWDISKSTAT_EPOCH=$(date +%s 2>/dev/null)
+
+        echo $NEWDISKSTAT >$HISTFILE
+        # now we have old and current stat; 
+        # let compare it
+        OLD_SECTORS_READ=$(echo $OLDDISKSTAT | awk '{print $3}')
+        NEW_SECTORS_READ=$(echo $NEWDISKSTAT | awk '{print $3}')
+        OLD_READ=$(echo $OLDDISKSTAT | awk '{print $1}')
+        NEW_READ=$(echo $NEWDISKSTAT | awk '{print $1}')
+        OLD_WRITE=$(echo $OLDDISKSTAT | awk '{print $5}')
+        NEW_WRITE=$(echo $NEWDISKSTAT | awk '{print $5}')
+
+        OLD_SECTORS_WRITTEN=$(echo $OLDDISKSTAT | awk '{print $7}')
+        NEW_SECTORS_WRITTEN=$(echo $NEWDISKSTAT | awk '{print $7}')
+
+        # kernel handles sectors by 512bytes
+        # http://www.mjmwired.net/kernel/Documentation/block/stat.txt
+        SECTORBYTESIZE=512
+
+        let "SECTORS_READ = $NEW_SECTORS_READ - $OLD_SECTORS_READ"
+        let "SECTORS_WRITE = $NEW_SECTORS_WRITTEN - $OLD_SECTORS_WRITTEN"
+        let "TIME = $NEWDISKSTAT_EPOCH - $OLDDISKSTAT_EPOCH"
+        [ $TIME -lt 1 ] && let "TIME = 1"
+        let "BYTES_READ_PER_SEC = $SECTORS_READ * $SECTORBYTESIZE / $TIME"
+        let "BYTES_WRITTEN_PER_SEC = $SECTORS_WRITE * $SECTORBYTESIZE / $TIME"
+        let "TPS=($NEW_READ - $OLD_READ + $NEW_WRITE - $OLD_WRITE) / $TIME"
+        let "KBYTES_READ_PER_SEC = $BYTES_READ_PER_SEC / 1024"
+        let "KBYTES_WRITTEN_PER_SEC = $BYTES_WRITTEN_PER_SEC / 1024"
+
+        EXITCODE=$E_OK
+
+        # check TPS
+        if [ $TPS -gt $WARN_TPS ]; then
+            if [ $TPS -gt $CRIT_TPS ]; then
+                EXITCODE=$E_CRITICAL
+            else
+                EXITCODE=$E_WARNING
+            fi
+        fi
+
+        # check read
+        if [ $BYTES_READ_PER_SEC -gt $WARN_READ ]; then
+            if [ $BYTES_READ_PER_SEC -gt $CRIT_READ ]; then
+                EXITCODE=$E_CRITICAL
+            else
+                [ "$EXITCODE" -lt $E_CRITICAL ] && EXITCODE=$E_WARNING
+            fi
+        fi
+
+        # check write
+        if [ $BYTES_WRITTEN_PER_SEC -gt $WARN_WRITE ]; then
+            if [ $BYTES_WRITTEN_PER_SEC -gt $CRIT_WRITE ]; then
+                EXITCODE=$E_CRITICAL
+            else
+                [ "$EXITCODE" -lt $E_CRITICAL ] && EXITCODE=$E_WARNING
+            fi
+        fi
+
+        if [ "${DISK_TPS}" ]; then
+            [ "${CHECK_QUIET}" -o "${CHECK_NUMERIC}" ] && echo "${TPS}" || echo "$TPS io/s"
+        elif [ "${DISK_READ}" ]; then
+            [ "${CHECK_QUIET}" -o "${CHECK_NUMERIC}" ] && echo "${BYTES_READ_PER_SEC}" || echo "${BYTES_READ_PER_SEC} b/s"
+        elif [ "${DISK_WRITE}" ]; then
+            [ "${CHECK_QUIET}" -o "${CHECK_NUMERIC}" ] && echo "${BYTES_WRITTEN_PER_SEC}" || echo "${BYTES_WRITTEN_PER_SEC} b/s"
+        else
+            [ "${CHECK_QUIET}" -o "${CHECK_NUMERIC}" ] && echo "${TPS} ${BYTES_READ_PER_SEC} ${BYTES_WRITTEN_PER_SEC}" || echo "$TPS io/s, read ${BYTES_READ_PER_SEC} b/s,  write ${BYTES_WRITTEN_PER_SEC} b/s"
+        fi
+        operand_error=$EXITCODE && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+    done
+    # [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk I/O statistics
+function check_disk_io() {
+    [ "${CHECK_QUIET}" ] || echo
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
+    for dev in ${devs}; do
+        if [ -e /sys/block/${dev}/dev ]; then
+            [ "${CHECK_QUIET}" ] || echo -n "${dev}: "
+            DISK_TPS=1 check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk read statistics
+function check_disk_read() {
+    [ "${CHECK_QUIET}" ] || echo
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
+    for dev in ${devs}; do
+        if [ -e /sys/block/${dev}/dev ]; then
+            [ "${CHECK_QUIET}" ] || echo -n "${dev}: "
+            DISK_READ=1 check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk write statistics
+function check_disk_write() {
+    [ "${CHECK_QUIET}" ] || echo
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
+    for dev in ${devs}; do
+        if [ -e /sys/block/${dev}/dev ]; then
+            [ "${CHECK_QUIET}" ] || echo -n "${dev}: "
+            DISK_WRITE=1 check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}
+
+# disk statistics
+function check_disk_stats() {
+    check stat || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    [ "${CHECK_QUIET}" ] || echo
+    devs="${CHECK_OPERAND} $@" && [ -z "${devs/ /}" ] && devs="$(ls /sys/block 2>/dev/null)"
+    for dev in ${devs}; do
+        if [ -e /sys/block/${dev}/dev ]; then
+            echo -n "${dev}: "
+            check_disk_stat ${dev}
+            operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        fi
+    done
+    # [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_UNDEFINED}
+    return ${error:-0}
+}

@@ -1,0 +1,175 @@
+# # check - test script for linux server
+ #
+# functions override - check_function_cve2014
+# History:
+# 20141022 YA : shellshock
+# 20141024 YA : poodle
+
+# default to CHECK_RELEASE version
+eval CHECK_RELEASE_${BASH_SOURCE##*/check_}="${CHECK_RELEASE}"
+
+# heartbleed (openssl)
+function check_heartbleed() {
+    [ ${CHECK_QUIET} ] || echo
+    check_cve_2014_0160 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    [ ${CHECK_QUIET} ] && { [ ${error:0} -eq 0 ] && echo ${CHECK_OK} || echo ${CHECK_ERROR}; }
+    return ${error:-0}
+}
+
+# shellshock (bash)
+function check_shellshock() {
+    [ ${CHECK_QUIET} ] || echo
+    check_cve_2014_6271 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    check_cve_2014_6277 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    check_cve_2014_6278 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    check_cve_2014_7169 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    check_cve_2014_7186 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    check_cve_2014_7187 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    [ ${CHECK_QUIET} ] && { [ ${error:0} -eq 0 ] && echo ${CHECK_OK} || echo ${CHECK_ERROR}; }
+    return ${error:-0}
+}
+
+# poodle (sslv3)
+function check_poodle() {
+    [ ${CHECK_QUIET} ] || echo
+    check_cve_2014_3566 $@
+    cve_error=$? && [ ${cve_error} -gt ${error:-0} ] && error=${cve_error}
+    [ ${CHECK_QUIET} ] && { [ ${error:0} -eq 0 ] && echo ${CHECK_OK} || echo ${CHECK_ERROR}; }
+    return ${error:-0}
+}
+
+# CVE-2014-0160 : heartbleed bug is in the OpenSSL's implementation of the TLS/DTLS (transport layer security protocols) heartbeat extension (RFC6520).
+function check_cve_2014_0160() {
+    # TODO
+    return ${error:-0}
+}
+
+# CVE-2014-6271 : shellshock original report
+function check_cve_2014_6271() {
+    cve=$(env 'x=() { :;}; echo vulnerable' bash -c true 2>&1 | grep 'vulnerable' | wc -l)
+    [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-6271 (shellshock original report): "
+    if [ $cve -gt 0 ]; then
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${HOSTNAME/.*/} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_ERROR}"
+        error=${CHECK_RETURN_CRITICAL}
+    else
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${HOSTNAME/.*/} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_OK}"
+    fi
+    return ${error:-0}
+}
+
+# CVE-2014-6277 : shellshock segfault
+function check_cve_2014_6277() {
+    { cve=$((x="() { x() { _;}; x() { _;} <<a; }" bash -c true 2>/dev/null || echo vulnerable) | grep 'vulnerable' | wc -l) ;} 2>/dev/null
+    [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-6277 (shellshock segfault): "
+    if [ $cve -gt 0 ]; then
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${HOSTNAME/.*/} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_ERROR}"
+        error=${CHECK_RETURN_CRITICAL}
+    else
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${HOSTNAME/.*/} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_OK}"
+    fi
+    return ${error:-0}
+}
+
+# CVE-2014-6278 : shellshock Florian's patch
+function check_cve_2014_6278() {
+    cve=$(shellshocker='() { echo vulnerable; }' bash -c shellshocker 2>/dev/null | grep 'vulnerable' | wc -l)
+    [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-6278 (shellshock Florian's patch): "
+    if [ $cve -gt 0 ]; then
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${HOSTNAME/.*/} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_ERROR}"
+        error=${CHECK_RETURN_CRITICAL}
+    else
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${HOSTNAME/.*/} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_OK}"
+    fi
+    return ${error:-0}
+}
+
+# CVE-2014-7169 : shellshock taviso bug
+function check_cve_2014_7169() {
+    cve=$((cd /tmp; rm -f /tmp/echo; env x='() { (a)=>\' bash -c "echo echo nonvuln" 2>/dev/null; [[ "$(cat echo 2> /dev/null)" == "nonvuln" ]] && echo "vulnerable" 2> /dev/null) | grep 'vulnerable' | wc -l)
+    [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-7169 (shellshock taviso bug): "
+    if [ $cve -gt 0 ]; then
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${HOSTNAME/.*/} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_ERROR}"
+        error=${CHECK_RETURN_CRITICAL}
+    else
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${HOSTNAME/.*/} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_OK}"
+    fi
+    return ${error:-0}
+}
+
+# CVE-2014-7186 : shellshock redir_stack bug
+function check_cve_2014_7186() {
+    { cve=$((bash -c 'true <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF <<EOF' 2>/dev/null || echo "vulnerable") | grep 'vulnerable' | wc -l) ;} 2>/dev/null
+    [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-7186 (shellshock redir_stack bug): "
+    if [ $cve -gt 0 ]; then
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${HOSTNAME/.*/} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_ERROR}"
+        error=${CHECK_RETURN_CRITICAL}
+    else
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${HOSTNAME/.*/} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_OK}"
+    fi
+    return ${error:-0}
+}
+
+# CVE-2014-7187 : shellshock nested loops off by one
+function check_cve_2014_7187() {
+    cve=$(((for x in {1..200}; do echo "for x$x in ; do :"; done; for x in {1..200}; do echo done; done) | bash 2>/dev/null|| echo "vulnerable") | grep 'vulnerable' | wc -l)
+    [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-7187 (shellshock nested loops off by one): "
+    if [ $cve -gt 0 ]; then
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${HOSTNAME/.*/} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_ERROR}"
+        error=${CHECK_RETURN_CRITICAL}
+    else
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${HOSTNAME/.*/} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${HOSTNAME/.*/}: ${CHECK_OK}"
+    fi
+    return ${error:-0}
+}
+
+# CVE-2014-3566 : POODLE Padding Oracle On Downgraded Legacy.
+function check_cve_2014_3566() {
+    check openssl
+    for operand in ${@:-localhost}; do
+        case "${operand}" in
+            *:*)
+                host=${operand%%:*}
+                port=${operand##*:}
+                ;;
+            *)
+                host=${operand}
+                port=443
+                ;;
+        esac
+
+        timeout_bin=`which timeout 2>/dev/null`
+
+        out="`echo 'Q' | ${timeout_bin:+$timeout_bin 5} openssl s_client -connect "${host}:${port}" 2>/dev/null`"
+
+        [ "${host}" = "localhost" ] && host=${HOSTNAME/.*/}
+        [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -n "CVE-2014-3566 (poodle): "
+        if [ $? -eq 124 ]; then
+            [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo "ERROR: Timeout connecting to ${host}:${port}" || [ ${CHECK_QUIET} ] || echo ${CHECK_ERROR}
+            return ${CHECK_ERROR_HOST_DOWN}
+        fi
+
+        if ! echo "$out" | grep -q 'Cipher is' ; then
+            [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo "${host}:${port} is not vulnerable.  Failed to establish SSL connection." || [ ${CHECK_QUIET} ] || echo ${CHECK_ERROR}
+            return ${CHECK_ERROR_CONNECTION_FAILED}
+        fi
+
+        proto=`echo "$out" | grep '^ *Protocol *:' | awk '{ print $3 }'`
+        cipher=`echo "$out" | grep '^ *Cipher *:' | awk '{ print $3 }'`
+
+        if [ "$cipher" = '0000'  -o  "$cipher" = '(NONE)' ]; then
+            [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[92m${host}:${port} is not vulnerable\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${host}:${port}: ${CHECK_OK}"
+        else
+            [ ${CHECK_EXTENDED} ] && [ ! ${CHECK_QUIET} ] && echo -e "\033[91m${host}:${port} is VULNERABLE\033[39m" || [ ${CHECK_QUIET} ] || echo "${FUNCNAME#check_}@${host}:${port}: ${CHECK_ERROR}"
+            operand_error=${CHECK_RETURN_CRITICAL}
+        fi
+        [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+    done
+    return ${error:-0}
+}

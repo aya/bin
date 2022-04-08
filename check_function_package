@@ -1,0 +1,68 @@
+# # check - test script for linux server
+ #
+# functions override - check_function_package
+# History:
+# 20140324 YA : extract package functions in external file
+
+# default to CHECK_RELEASE version
+eval CHECK_RELEASE_${BASH_SOURCE##*/check_}="${CHECK_RELEASE}"
+
+# package is installed
+function check_package() {
+    check rpm 2>/dev/null || check dpkg 2>/dev/null || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
+        rpm -q ${operand} >/dev/null 2>&1 \
+        || dpkg -s ${operand} >/dev/null 2>&1
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        [ ${operand_error} -ne 0 ] && echo -n ${CHECK_ERROR} || echo -n ${CHECK_OK}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_NOT_FOUND_PACKAGE}
+    return ${error:-0}
+}
+
+# package install date
+function check_package_date() {
+    check rpm 2>/dev/null || check dpkg 2>/dev/null || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
+        package_date="$(rpm -q ${operand} --queryformat '%{installtime}' 2>/dev/null)" \
+        || package_date="$(date -r /var/lib/dpkg/info/${operand}.list +%s 2>/dev/null)"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        [ ${CHECK_NUMERIC} ] && echo -n ${package_date} || echo -n $(date -d "@${package_date}" +${CHECK_DATE_FORMAT} 2>/dev/null)
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_NOT_FOUND_PACKAGE}
+    return ${error:-0}
+}
+
+# package release
+function check_package_release() {
+    check rpm 2>/dev/null || check dpkg 2>/dev/null || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
+        package_release="$(rpm -q ${operand} --queryformat '%{release}' 2>/dev/null)" \
+        || package_release="$(dpkg-query -W -f '${Revision}' ${operand} 2>/dev/null)"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        echo -n ${package_release}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_NOT_FOUND_PACKAGE}
+    return ${error:-0}
+}
+
+# package version
+function check_package_version() {
+    check rpm 2>/dev/null || check dpkg 2>/dev/null || return ${CHECK_ERROR_NOT_FOUND_BINARY}
+    for operand in ${@//,/ } ${CHECK_OPERAND//,/ }; do
+        package_version="$(rpm -q ${operand} --queryformat '%{version}' 2>/dev/null)" \
+        || package_version="$(dpkg-query -W -f '${Version}' ${operand} 2>/dev/null)"
+        operand_error=$? && [ ${operand_error} -gt ${error:-0} ] && error=${operand_error}
+        echo -n ${package_version}
+        echo -n " "
+    done
+    echo
+    [ ${error:-0} -ne 0 ] && error=${CHECK_ERROR_NOT_FOUND_PACKAGE}
+    return ${error:-0}
+}
