@@ -1,0 +1,59 @@
+#!/bin/sh
+# author: Yann (aya) Autissier
+# link: https://github.com/aya/bin/blob/master/dvpn
+# desc: dmenu openvpn wrapper to connect to VPNs
+# licence: AGPL-V3
+# TODO: interactive user/pass
+set -eu
+
+OVPN_DIR=~/.vpn/
+PATH="$PATH:/usr/local/sbin:/usr/sbin"
+[ "$(id -u)" -ne 0 ] && SUDO="/usr/bin/sudo"
+which dmenu openvpn notify-send >/dev/null || exit 2
+
+DMENU_OPTS='-i -l 10 -nb #F0F0F0 -nf #777777 -sb #c0a4bb -sf #000000'
+DMENU="dmenu $DMENU_OPTS"
+
+config_get() {
+  if ! config_files="$(find "${OVPN_DIR}" -name '*.ovpn' -printf '%P\n' 2>&1)"; then
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - config_get" \
+     "ERROR: $(printf "%s" "$config_files")"
+    exit 1
+  fi
+  config_file=$(printf "${disconnect:-}%s" "$config_files" \
+    |${DMENU} -p "openvpn »"
+  )
+  [ -n "$config_file" ] || exit 1
+}
+
+openvpn_connect() {
+  ${SUDO:-} openvpn --askpass --daemon --config "${OVPN_DIR}/${config_file}"
+}
+
+openvpn_disconnect() {
+  ${SUDO:-} killall openvpn
+}
+
+vpn_set() {
+  case "$config_file" in
+    *.ovpn)
+      openvpn_connect
+      ;;
+    ...\ Disconnect)
+      openvpn_disconnect
+      ;;
+  esac
+}
+
+vpn_status() {
+  if ip addr show tun0 >/dev/null 2>&1; then
+    disconnect="... Disconnect\n"
+  fi
+}
+
+vpn_status \
+ && config_get \
+ && vpn_set

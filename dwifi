@@ -1,0 +1,323 @@
+#!/bin/sh
+# author: Yann (aya) Autissier
+# link: https://github.com/aya/bin/blob/master/dwifi
+# link: https://github.com/mrdotx/dmenu/blob/master/scripts/dmenu_iwd.sh
+# desc: dmenu iw and iwctl wrapper to connect to WPA and WEP wifi networks
+# licence: AGPL-V3
+set -eu
+
+PATH="$PATH:/usr/local/sbin:/usr/sbin"
+[ "$(id -u)" -ne 0 ] && SUDO="/usr/bin/sudo"
+which dmenu iwctl iw udhcpc notify-send >/dev/null || exit 2
+
+DMENU_OPTS='-i -l 10 -nb #F0F0F0 -nf #777777 -sb #c0a4bb -sf #000000'
+DMENU="dmenu ${DMENU_OPTS}"
+
+config_get_value()
+{
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || exit
+  awk -F= -v block="${2}" -v param="${3}" '
+    BEGIN {
+      pattern = "\\[" block "]";
+    }
+    $0 ~ pattern,(/\[/ && $0 !~ pattern) {
+      if (/^(\[|#)/ || NF <2) next;
+      gsub(/ *= */, "=");
+      gsub(/</, "\\<");
+      gsub(/>/, "\\>");
+      gsub(/\$/, "\\$");
+      if ($1 == param) {print substr($0,length($1)+2);};
+    }
+  ' "${1}"
+}
+
+disconnect() {
+  disconnect=$(iwctl station "${interface}" show \
+   |awk '$1 == "State" && $2 == "connected" {print "iwctl"}'
+  )
+  [ -z "${disconnect}" ] \
+   && disconnect=$(${SUDO:-} iw dev "${interface}" link \
+    |awk 'NR==1 && $1 == "Connected" {print "iw"}' \
+   )
+  case "${disconnect}" in
+    iw)
+      iw_disconnect
+      ;;
+    iwctl)
+      iwctl_disconnect
+      ;;
+  esac
+}
+
+escape_sequences_remove() {
+  sed -r 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g;/^\s*$/d;'
+}
+
+interface_get() {
+  ret="$(iwctl device list)"
+  err=$?
+  if [ $err -ne 0 ]; then
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - interface_get" \
+     "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
+    exit 1
+  fi
+  interface=$(printf "%s" "$ret" \
+   |iwd_output_cleanup \
+   |awk '{printf "%-16s (%.17s)\n", $1, $2}' \
+   |${DMENU} -p "interface »" \
+   |awk '{print $1}'
+  )
+  [ -n "${interface}" ] || exit 1
+}
+
+ip_renew() {
+  ret=$(${SUDO:-} udhcpc -qnfi "${interface}" 2>&1 >/dev/null)
+  err=$?
+  if [ $err -eq 0 ]; then
+    notify-send \
+     -u normal \
+     -t 3000 \
+     "$0 - ip_renew ${interface}" \
+     "Acquired IP address \"$(printf "%s" "$ret" \
+      |awk '/^udhcpc: lease of .* obtained/ {print $4}')\""
+  else
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - ip_renew ${interface}" \
+     "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
+    exit 1
+  fi
+}
+
+iw_connect() {
+  ret=$(${SUDO:-} iw dev "${interface}" connect "${ssid}" key d:0:"${password}")
+  err=$?
+  if [ $err -eq 0 ]; then
+    timer=8
+    message_id="$(date +%s)"
+    while [ -z "$(${SUDO:-} iw dev "${interface}" link 2>/dev/null \
+     |awk 'NR==1 && $1 == "Connected"')" ]; do
+      if [ ${timer} -ge 1 ]; then
+        notify-send \
+         -u low \
+         -t 0 \
+         "$0 - iw_connect ${interface}" \
+         "Connecting to ssid ${ssid}... (${timer})" \
+         -h string:x-canonical-private-synchronous:"${message_id}"
+        sleep 1
+        timer=$((timer-1))
+      else
+        notify-send \
+         -u critical \
+         -t 5000 \
+         "$0 - iw_connect ${interface}" \
+         "ERROR: Timeout connecting to ssid ${ssid}" \
+         -h string:x-canonical-private-synchronous:"${message_id}"
+        exit 1
+      fi
+    done
+    notify-send \
+     -t 1000 \
+     -u normal \
+     "$0 - iw_connect ${interface}" \
+     "Connected to ssid \"${ssid}\"" \
+     -h string:x-canonical-private-synchronous:"${message_id}"
+  else
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - iw_connect ${interface} ${ssid}" \
+     "ERROR: $(printf "%s" "$ret")"
+    exit 1
+  fi
+}
+
+iw_disconnect() {
+  ret=$(${SUDO:-} iw dev "${interface}" disconnect 2>&1)
+  err=$?
+  if [ $err -ne 0 ]; then
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - iw_disconnect ${interface}" \
+     "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
+    exit 1
+  fi
+}
+
+iwctl_connect() {
+  # shellcheck disable=SC2068 # we want $@ as separate arguments
+  ret=$(iwctl station "${interface}" connect "${ssid}" $@)
+  err=$?
+  if [ $err -eq 0 ]; then
+    timer=8
+    message_id="$(date +%s)"
+    while [ -z "$(iwctl station "${interface}" show 2>/dev/null \
+     |awk '$1 == "State" && $2 == "connected"')" ]; do
+      if [ ${timer} -ge 1 ]; then
+        notify-send \
+         -u low \
+         -t 0 \
+         "$0 - iwctl_connect ${interface}" \
+         "Connecting to ssid ${ssid}... (${timer})" \
+         -h string:x-canonical-private-synchronous:"${message_id}"
+        sleep 1
+        timer=$((timer-1))
+      else
+        notify-send \
+         -u critical \
+         -t 5000 \
+         "$0 - iwctl_connect ${interface}" \
+         "ERROR: Timeout connecting to ssid ${ssid}" \
+         -h string:x-canonical-private-synchronous:"${message_id}"
+        exit 1
+      fi
+    done
+    notify-send \
+     -t 1000 \
+     -u normal \
+     "$0 - iwctl_connect ${interface}" \
+     "Connected to ssid \"${ssid}\"" \
+     -h string:x-canonical-private-synchronous:"${message_id}"
+  else
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - iwtcl_connect ${interface} ${ssid}" \
+     "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
+    exit 1
+  fi
+}
+
+iwctl_disconnect() {
+  ret=$(iwctl station "${interface}" disconnect)
+  err=$?
+  if [ $err -ne 0 ]; then
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - iwctl_disconnect ${interface}" \
+     "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
+    exit 1
+  fi
+}
+
+iwd_output_cleanup() {
+  sed -r '1,4d;' |escape_sequences_remove
+}
+
+password_get() {
+  password=$(${SUDO:-} config_get_value "/var/lib/iwd/${ssid}.${security}" Security Passphrase 2>/dev/null) \
+   || password=$(printf "" |${DMENU} -p "password »")
+}
+
+ssid_get() {
+  scan_result=$(iwctl station "${interface}" get-networks rssi-dbms \
+   |iwd_output_cleanup \
+   |awk '{
+     if ( $1 == ">" )
+       printf "* %-5s %-7s %-32s\n", $4, "("$3")", $2;
+     else if ( $1 == "'"$(${SUDO:-} iw dev "${interface}" link 2>/dev/null \
+      |awk '$1 == "SSID:" {print $2}')"'" )
+       printf "* %-5s %-7s %-32s\n", $3, "("$2")", $1;
+     else if ( $0 !~ /No networks available/ )
+       printf "  %-5s %-7s %-32s\n", $3, "("$2")", $1;
+   }' \
+   | sort
+  )
+  select=$(printf "%s\n... Disconnect\n... Scan again\n... Change interface\n" \
+   "${scan_result:-No network available :(}" \
+   |${DMENU} -p "ssid »" \
+  )
+  case "${select}" in
+   \**)
+    notify-send \
+     -u normal \
+     -t 3000 \
+     "$0 - ssid_get ${interface}" \
+     "Already connected to ssid \"$(printf "%s" "${select}" |awk '{print $4}')\""
+    ssid_get
+    ;;
+   ...\ Disconnect)
+    disconnect \
+    && ssid_get
+    ;;
+   ...\ Scan\ again)
+    ssid_scan \
+    && ssid_get
+    ;;
+   ...\ Select\ interface)
+    interface_get \
+    && ssid_scan \
+    && ssid_get
+    ;;
+   *)
+    ssid=$(printf "%s" "${select}" |awk '{$1 = $2 = ""; sub(/^[ \t]+/,""); print}')
+    security=$(printf "%s" "${select}" |awk '{print substr($2,2,length($2)-2)}')
+    ;;
+  esac
+  [ -n "${ssid}" ] && [ -n "${security}" ] || exit 1
+}
+
+ssid_scan() {
+  timer=3
+  message_id="$(date +%s)"
+  ret=$(iwctl station "${interface}" scan)
+  err=$?
+  if [ $err -eq 0 ]; then
+    while [ ${timer} -ge 1 ]; do
+      notify-send \
+       -u low \
+       -t 0 \
+       "$0 - ssid_scan ${interface}" \
+       "Scanning... (${timer})" \
+       -h string:x-canonical-private-synchronous:"${message_id}"
+      sleep 1
+      timer=$((timer-1))
+    done \
+     && notify-send \
+      -u low \
+      -t 1000 \
+      "$0 - ssid_scan ${interface}" \
+      "Scan finished" \
+      -h string:x-canonical-private-synchronous:"${message_id}"
+  else
+    notify-send \
+     -u critical \
+     -t 5000 \
+     "$0 - ssid_scan ${interface}" \
+     "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
+    exit 1
+  fi
+}
+
+ssid_set() {
+  disconnect
+  case "${security}" in
+    open)
+      iwctl_connect
+      ;;
+    psk)
+      password_get
+      if [ -n "${password}" ]; then
+        iwctl_connect -P "${password}"
+      else
+        iwctl_connect --dont-ask
+      fi
+      ;;
+    wep)
+      password_get
+      [ -n "${password}" ] && iw_connect
+      ;;
+  esac
+}
+
+interface_get \
+ && ssid_scan \
+ && ssid_get \
+ && ssid_set \
+ && ip_renew

@@ -1,0 +1,18 @@
+#!/bin/bash
+# author: Yann (aya) Autissier
+# link: https://github.com/aya/bin/blob/master/dpass
+# desc: dmenu pass wrapper to read passwords from gpg password store
+# licence: AGPL-V3
+
+shopt -s nullglob globstar
+
+password_store=${PASSWORD_STORE_DIR-~/.password-store}
+password_files=( "${password_store}"/**/*.gpg )
+password_files=( "${password_files[@]#"${password_store}"/}" )
+password_files=( "${password_files[@]%.gpg}" )
+
+password=$(printf '%s\n' "${password_files[@]}" | dmenu "$@")
+
+[[ -n $password ]] || exit
+
+PASSWORD_STORE_DIR="${password_store}" pass show -c "$password" 2>/dev/null && xsel -o -b |xsel -i
