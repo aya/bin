@@ -1,0 +1,111 @@
+#!/bin/sh
+# author: Yann (aya) Autissier
+# link: https://github.com/aya/bin/blob/master/system_check
+# desc: watch for cpu/ram usage and notify user on overload
+# licence: AGPL-V3
+set -eu
+
+INTERVAL=${CHECK_INTERVAL:-15}
+HOSTNAME=${CHECK_HOSTNAME:-$(hostname 2>/dev/null)}
+SUSPEND=${CHECK_SUSPEND:-loginctl suspend}
+SUSPEND_CPU_LOAD=${CHECK_SUSPEND_CPU_LOAD:-0.03}
+THRESHOLD_BAT_CAPA=${CHECK_THRESHOLD_BAT_CAPA:-15}
+THRESHOLD_CPU_LOAD=${CHECK_THRESHOLD_CPU_LOAD:-$(grep -c ^processor /proc/cpuinfo 2>/dev/null)}
+THRESHOLD_CPU_TEMP=${CHECK_THRESHOLD_CPU_TEMP:-60}
+THRESHOLD_RAM_USED=${CHECK_THRESHOLD_RAM_USED:-90}
+THRESHOLD_SWAP_USED=${CHECK_THRESHOLD_SWAP_USED:-75}
+
+while true; do
+
+  # Check battery capacity
+  bat_capa=$(for bat in /sys/class/power_supply/*; do
+    [ "$(cat "${bat}/type")" = "Battery" ] \
+     && [ "$(cat "${bat}/status")" != "Charging" ] \
+     && awk '{printf "%d\n", $1}' "${bat}/capacity" \
+     && break;
+  done ||:)
+  if [ "${bat_capa:-100}" -lt "${THRESHOLD_BAT_CAPA}" ]; then
+    notify-send \
+     -i dialog-warning \
+     -t 5000 \
+     -u critical \
+     "${0#-} - ${HOSTNAME}" \
+     "WARNING: BATTERY capacity = ${bat_capa}%"
+  fi
+
+  # Check CPU load average for last minute
+  cpu_load=$(awk '{printf "%d\n", $1}' /proc/loadavg 2>/dev/null)
+  if [ "${cpu_load:-0}" -ge "${THRESHOLD_CPU_LOAD}" ]; then
+    notify-send \
+     -i dialog-warning \
+     -t 5000 \
+     -u critical \
+     "${0#-} - ${HOSTNAME}" \
+     "WARNING: CPU load = ${cpu_load}"
+  fi
+
+  # Check RAM
+  ram_used=$(free 2>/dev/null |awk '$1 == "Mem:" {printf "%d\n", $3/($2+1) * 100.0}')
+  if [ "${ram_used:-0}" -ge "${THRESHOLD_RAM_USED}" ]; then
+    notify-send \
+     -i dialog-warning \
+     -t 5000 \
+     -u critical \
+     "${0#-} - ${HOSTNAME}" \
+     "WARNING: RAM used = ${ram_used}%"
+  fi
+
+  # Check SWAP
+  swap_used=$(free 2>/dev/null |awk '$1 == "Swap:" {printf "%d\n", $3/($2+1) * 100.0}')
+  if [ "${swap_used:-0}" -ge "${THRESHOLD_SWAP_USED}" ]; then
+    notify-send \
+     -i dialog-warning \
+     -t 5000 \
+     -u critical \
+     "${0#-} - ${HOSTNAME}" \
+     "WARNING: SWAP used = ${swap_used}%"
+  fi
+
+  # Check CPU temp
+  cpu_temp=$(awk '{printf "%d\n", $1 / 1000}' /sys/devices/virtual/thermal/thermal_zone0/temp)
+  if [ "${cpu_temp:-0}" -ge "${THRESHOLD_CPU_TEMP}" ]; then
+    notify-send \
+     -i dialog-warning \
+     -t 5000 \
+     -u critical \
+     "${0#-} - ${HOSTNAME}" \
+     "WARNING: CPU temperature = ${cpu_temp}°"
+  fi
+
+  # When called with arg "suspend"
+  if [ "${1:-}" = "suspend" ]; then
+    # Check CPU load average for last 15 minutes and suspend the system if no activity
+    cpu_load=$(awk '{printf "%s\n", $3}' /proc/loadavg 2>/dev/null)
+    if awk "BEGIN {exit !(${cpu_load:-0} < ${SUSPEND_CPU_LOAD})}"; then
+      timer=$((INTERVAL-3))
+      message_id="$(date +%s)"
+      while [ ${timer} -ge 1 ]; do
+        notify-send \
+         -h string:x-canonical-private-synchronous:"${message_id}" \
+         -i dialog-warning \
+         -t 0 \
+         -u normal \
+         "${0#-} - ${HOSTNAME}" \
+         "WARNING: CPU load = ${cpu_load}\nGoing to sleep in ${timer}s..."
+        sleep 1
+        timer=$((timer-1))
+      done
+      notify-send \
+       -h string:x-canonical-private-synchronous:"${message_id}" \
+       -i dialog-warning \
+       -t 0 \
+       -u normal \
+       "${0#-} - ${HOSTNAME}" \
+       "Suspending..."
+      ${SUSPEND}
+    fi
+  fi
+
+  sleep "${INTERVAL}"
+
+done

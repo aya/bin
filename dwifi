@@ -58,8 +58,9 @@ interface_get() {
   err=$?
   if [ $err -ne 0 ]; then
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - interface_get" \
      "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
     exit 1
@@ -78,15 +79,16 @@ ip_renew() {
   err=$?
   if [ $err -eq 0 ]; then
     notify-send \
-     -u normal \
      -t 3000 \
+     -u normal \
      "$0 - ip_renew ${interface}" \
      "Acquired IP address \"$(printf "%s" "$ret" \
       |awk '/^udhcpc: lease of .* obtained/ {print $4}')\""
   else
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - ip_renew ${interface}" \
      "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
     exit 1
@@ -103,8 +105,8 @@ iw_connect() {
      |awk 'NR==1 && $1 == "Connected"')" ]; do
       if [ ${timer} -ge 1 ]; then
         notify-send \
-         -u low \
          -t 0 \
+         -u low \
          "$0 - iw_connect ${interface}" \
          "Connecting to ssid ${ssid}... (${timer})" \
          -h string:x-canonical-private-synchronous:"${message_id}"
@@ -112,8 +114,9 @@ iw_connect() {
         timer=$((timer-1))
       else
         notify-send \
-         -u critical \
+         -i dialog-error \
          -t 5000 \
+         -u critical \
          "$0 - iw_connect ${interface}" \
          "ERROR: Timeout connecting to ssid ${ssid}" \
          -h string:x-canonical-private-synchronous:"${message_id}"
@@ -128,8 +131,9 @@ iw_connect() {
      -h string:x-canonical-private-synchronous:"${message_id}"
   else
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - iw_connect ${interface} ${ssid}" \
      "ERROR: $(printf "%s" "$ret")"
     exit 1
@@ -141,8 +145,9 @@ iw_disconnect() {
   err=$?
   if [ $err -ne 0 ]; then
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - iw_disconnect ${interface}" \
      "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
     exit 1
@@ -154,26 +159,27 @@ iwctl_connect() {
   ret=$(iwctl station "${interface}" connect "${ssid}" $@)
   err=$?
   if [ $err -eq 0 ]; then
-    timer=8
+    timer=9
     message_id="$(date +%s)"
     while [ -z "$(iwctl station "${interface}" show 2>/dev/null \
      |awk '$1 == "State" && $2 == "connected"')" ]; do
       if [ ${timer} -ge 1 ]; then
         notify-send \
-         -u low \
+         -h string:x-canonical-private-synchronous:"${message_id}" \
          -t 0 \
+         -u low \
          "$0 - iwctl_connect ${interface}" \
-         "Connecting to ssid ${ssid}... (${timer})" \
-         -h string:x-canonical-private-synchronous:"${message_id}"
+         "Connecting to ssid ${ssid}... (${timer})"
         sleep 1
         timer=$((timer-1))
       else
         notify-send \
-         -u critical \
+         -h string:x-canonical-private-synchronous:"${message_id}" \
+         -i dialog-error \
          -t 5000 \
+         -u critical \
          "$0 - iwctl_connect ${interface}" \
-         "ERROR: Timeout connecting to ssid ${ssid}" \
-         -h string:x-canonical-private-synchronous:"${message_id}"
+         "ERROR: Timeout connecting to ssid ${ssid}"
         exit 1
       fi
     done
@@ -185,8 +191,9 @@ iwctl_connect() {
      -h string:x-canonical-private-synchronous:"${message_id}"
   else
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - iwtcl_connect ${interface} ${ssid}" \
      "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
     exit 1
@@ -198,8 +205,9 @@ iwctl_disconnect() {
   err=$?
   if [ $err -ne 0 ]; then
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - iwctl_disconnect ${interface}" \
      "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
     exit 1
@@ -236,8 +244,9 @@ ssid_get() {
   case "${select}" in
    \**)
     notify-send \
-     -u normal \
+     -i dialog-warning \
      -t 3000 \
+     -u normal \
      "$0 - ssid_get ${interface}" \
      "Already connected to ssid \"$(printf "%s" "${select}" |awk '{print $4}')\""
     ssid_get
@@ -271,24 +280,25 @@ ssid_scan() {
   if [ $err -eq 0 ]; then
     while [ ${timer} -ge 1 ]; do
       notify-send \
-       -u low \
+       -h string:x-canonical-private-synchronous:"${message_id}" \
        -t 0 \
+       -u low \
        "$0 - ssid_scan ${interface}" \
-       "Scanning... (${timer})" \
-       -h string:x-canonical-private-synchronous:"${message_id}"
+       "Scanning... (${timer})"
       sleep 1
       timer=$((timer-1))
     done \
      && notify-send \
-      -u low \
+      -h string:x-canonical-private-synchronous:"${message_id}" \
       -t 1000 \
+      -u low \
       "$0 - ssid_scan ${interface}" \
-      "Scan finished" \
-      -h string:x-canonical-private-synchronous:"${message_id}"
+      "Scan finished"
   else
     notify-send \
-     -u critical \
+     -i dialog-error \
      -t 5000 \
+     -u critical \
      "$0 - ssid_scan ${interface}" \
      "ERROR: $(printf "%s" "$ret" |escape_sequences_remove)"
     exit 1

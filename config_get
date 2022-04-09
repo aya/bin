@@ -1,0 +1,82 @@
+#!/bin/sh
+# author: Yann (aya) Autissier
+# link: https://github.com/aya/bin/blob/master/config_get
+# desc: read blocks, parameters or values from configuration files
+# licence: AGPL-V3
+
+set -e
+
+# function usage: print help
+usage() {
+  echo "$0 file [block] [param]"
+}
+
+# function get_blocks(file): list blocks in file
+get_blocks() {
+  blocks=$(
+   awk -F '[][]' '
+    NF==3 && $0 ~ /^\[.*\]/ { print $2 }
+   ' "${file}"
+  )
+  [ -n "${blocks}" ] && echo "${blocks}" && exit 0 || exit 2
+}
+
+# function get_params(file,block): list param=value from block in file
+get_params()
+{
+  params=$(
+   awk -F= -v block="${block}" '
+    BEGIN {
+      pattern = "\\[" block "]";
+    }
+    $0 ~ pattern,(/\[/ && $0 !~ pattern) {
+      if (/^(\[|#)/ || NF <2) next;
+      gsub(/ *= */, "=");
+      gsub(/</, "\\<");
+      gsub(/>/, "\\>");
+      gsub(/\$/, "\\$");
+      print $0;
+    }
+   ' "${file}"
+  )
+  [ -n "${params}" ] && echo "${params}" && exit 0 || exit 2
+}
+
+# function get_values(file,block,param): print value of param from block in file
+get_values()
+{
+  values=$(
+   awk -F= -v block="${block}" -v param="${param}" '
+    BEGIN {
+      pattern = "\\[" block "]";
+    }
+    $0 ~ pattern,(/\[/ && $0 !~ pattern) {
+      if (/^(\[|#)/ || NF <2) next;
+      gsub(/ *= */, "=");
+      gsub(/</, "\\<");
+      gsub(/>/, "\\>");
+      gsub(/\$/, "\\$");
+      if ($1 == param) {print substr($0,length($1)+2);};
+    }
+   ' "${file}"
+  )
+  [ -n "${values}" ] && echo "${values}" && exit 0 || exit 2
+}
+
+if [ -f "$1" ]; then
+  file="$1"
+  if [ -n "$2" ]; then
+    block="$2"
+    if [ -n "$3" ]; then
+      param="$3"
+      get_values
+    else
+      get_params
+    fi
+  else
+    get_blocks
+  fi
+else
+  usage
+  exit 1
+fi

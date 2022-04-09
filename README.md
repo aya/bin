@@ -1,3 +1,3 @@
 # bin
 
-aya's ~/.local/bin
+~aya/.local/bin
